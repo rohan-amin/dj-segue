@@ -106,3 +106,63 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - **Long-term tempo direction (post-v0.1, agreed with user 2026-04-24):** tempo will eventually be a **full automation lane** — meaning tempo can change over the course of a mix (DJ tempo builds, gradual matches, etc.), not just be set per-segment. The intermediate step (a static `play.target_bpm` field, additive minor schema bump) is a reasonable bridge if M2 needs mismatched-bpm crossfades before the automation lane lands. Either way, plan for the automation-lane endpoint when designing the executor's tempo handling — don't bake in assumptions that tempo is a per-segment constant.
 
 ---
+
+## Session: 2026-04-24 (M1 part B — preprocessor, native engine, M1 ships)
+
+**Milestone:** M1 — Hello Mix (DONE)
+**Duration:** one focused session, continued from M1 part A in the same conversation
+**Worked on:** Analyzer, preprocessor, time math, native WAV+live executor, deferred validation rules, M1 acceptance test, CLI completion
+
+### Completed
+- `analyzer/beat.py` — librosa-based BPM + beat-time detection. For pure sine fixtures librosa returns bpm=0 and 0 beats (no onsets to lock to), which is correct behavior — the plan's declared `bpm` is the v0.1 source of truth.
+- `analyzer/cache.py` — `<audio>.beats` JSON sidecar keyed by audio mtime + analyzer version. Round-trips via `CacheEntry` dataclass; `is_fresh()` does cheap mtime/version checks.
+- `preprocessor/pipeline.py` — `preprocess(plan, audio_root) → PreprocessResult`. Idempotent (skips fresh caches). Returns per-track `TrackAnalysis` with stems → BeatAnalysis and the plan's `declared_bpm`.
+- `time_math.py` — single source of truth for position/duration → seconds conversions. `mix_pos_to_seconds` (mix-time, rejects cue refs), `track_pos_to_seconds` (track-time, resolves cues via track registry), `duration_to_seconds`. 4/4 hardcoded for bar↔beat.
+- `executor/base.py` — `MixExecutor` abstract with `render`, `render_to_wav`, `play_live`. `RenderResult` dataclass carries float32 stereo samples + sample rate.
+- `executor/native/engine.py` — compiles each `play` segment to (mix_start_sample, mix_end_sample, track_start_sample, deck), per-deck stereo buffers, vectorized volume curves via `_lane_to_curve` (linear/step/exponential supported; exponential falls back to linear when an endpoint is 0). Mono → stereo by channel duplication. Single sample rate; mismatched track rates raise NotImplementedError. Transitions and stem-based tracks raise NotImplementedError pointing to M2/M3.
+- Live audio path: `play_live` calls `sd.play(buffer, blocking=True)` against the pre-rendered mix. Architecture's lock-free callback rule holds because sounddevice's callback only memcpys from our buffer.
+- Deferred validation rules added to `schema/validator.py`: `validate_against_audio(plan, durations)` checks track-position-within-track-duration and same-deck segment overlap. Overlap math uses time_math + a per-deck cursor for implicit `start_at`. Both rules now exposed; old validator unchanged.
+- CLI: `dj-segue preprocess` and `dj-segue play [--render-to <wav>] [--audio-root <dir>]` are real. Both run `validate_plan`; `play` also runs `validate_against_audio` after preprocessing. Stub messages removed.
+- Test audio fixtures unchanged from Session A (still 17s sines at 440/660 Hz).
+
+### Tests
+- 69 passed, 0 failed in ~0.16s. Full suite (40 from Session A + 29 new).
+- New tests: `test_time_math.py` (10), `test_preprocessor.py` (3), `test_audio_validator.py` (6), `test_m1_acceptance.py` (10).
+- M1 acceptance test renders `examples/hello_mix.plan.jsonc` to WAV and asserts: 32-second duration, stereo float32, no clipping, RMS in beat-windows matches modulated-sine math (full-volume = 0.354, fade-in window = 0.204), output is near-silent immediately after the step cut at beat 32, and FFT-bin energy proves track A's 440 Hz dominates the early window while track B's 660 Hz dominates the late window. WAV file integrity round-trips through soundfile.
+- End-to-end manual smoke: `dj-segue play examples/hello_mix.plan.jsonc --render-to /tmp/hello.wav` produces a clean 32s 1411200-sample WAV.
+
+### Schema or interface changes
+- None to the schema spec. Pydantic models unchanged from Session A.
+- Internal Python interface additions (no public guarantees): `MixExecutor` abstract, `validate_against_audio(plan, durations)`, `time_math` helpers, `PreprocessResult` / `TrackAnalysis` / `BeatAnalysis` dataclasses.
+
+### Dependencies added/removed
+- Added: `librosa>=0.10` (analyzer), `sounddevice>=0.4` (live audio).
+- librosa pulls in numba/scipy/soxr — heavy install (~30s on first run).
+
+### Open questions
+- None blocking. M1 is shipped.
+
+### Decisions resolved this session
+- **Tempo behavior implemented as decided last session:** play segments play at track's natural bpm; mix_tempo only converts mix-time positions to seconds. Confirmed correct by the acceptance test (track_a at 120 BPM plays its 32 declared track-beats in exactly 16 seconds).
+- **Live audio is render-then-stream**, not real-time mixing. Architecture's lock-free callback rule is honored trivially because the callback only memcpys finished samples. Real-time mixing in the callback is M2+ scope.
+- **No EQ in v0.1 native engine.** EqLane shapes parse and validate (Session A) but the engine raises nothing yet because the example doesn't use it; if a plan uses an EQ lane the engine will silently ignore it. Should be a clear NotImplementedError. **Surface for next session: decide whether engine should hard-fail on unsupported lanes (eq, stem_volume, crossfader) or warn-and-skip.**
+- **Per-channel/per-deck output buffers are kept transient.** They're allocated per render, summed once, then discarded. For M5 EQ we may need to keep per-deck output for filtering; refactor at that point.
+
+### Next session should
+- Begin M2 (Crossfades and per-deck automation):
+  1. Implement `transition` segment compilation (style: crossfade, cut). The compiler should expand transitions into per-deck `deck_volume` automation curves before reaching the renderer (this keeps the renderer simple).
+  2. Implement `crossfader` lane and the conversion from crossfader value to per-deck gains (for two-deck setups; multi-deck crossfader is undefined in the schema).
+  3. Implement `step` and `exponential` keyframe interpolation tests properly (linear is the only one exercised in M1).
+  4. Beat-locked timing: when a transition's `start_at` lands on a beat, audio crossover happens sample-accurately on that beat. Already true in M1's positioning math; add a regression test.
+  5. Decide and implement: native engine behavior on unsupported lanes (open question above).
+- Likely needs new fixture audio with actual transitions to test against.
+
+### Notes for future sessions
+- `time_math.py` is now the single source of truth for time conversions. Don't recompute beat→seconds inline in the engine, validator, or anywhere else; import the helpers. The validator's old `position_to_mix_beats` (mix-beats, not seconds) predates time_math and is only used by the audio-free keyframe-ordering check; consider unifying in a future cleanup.
+- Sample-rate handling is deliberately strict in M1: all tracks must share an SR or the engine raises. Resampling is a real M2/M3 concern (especially when stems and source audio mix). librosa.resample or soxr would be the path.
+- The renderer pre-allocates one stereo buffer per active deck plus the final mix buffer. For long mixes (>10 minutes) this is fine for M1 but will balloon as deck count grows; the M2+ design should consider mixing in chunks rather than full-length buffer-per-deck.
+- Cache invalidation uses mtime within 1ms. If audio files are touched without changing content, caches regenerate. That's a feature (no false-fresh) but means CI flows that copy audio should preserve mtimes.
+- `sounddevice` is imported lazily inside `play_live` so headless environments (no PortAudio device) can still import the engine and render to WAV. Do not move the import to module top-level.
+- M1 acceptance test does not assert byte-identical WAVs (no golden file). It asserts on properties (duration, RMS in time windows, FFT bin energies). This is more robust to harmless float/PCM rounding differences across platforms but won't catch subtle phase or stereo-balance regressions. Worth adding a perceptual golden in M2 if the test catches drift.
+
+---

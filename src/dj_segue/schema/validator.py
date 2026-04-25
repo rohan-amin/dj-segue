@@ -31,6 +31,11 @@ from dj_segue.schema.plan import (
     StemVolumeLane,
     TransitionSegment,
 )
+from dj_segue.time_math import (
+    duration_to_seconds,
+    mix_pos_to_seconds,
+    track_pos_to_seconds,
+)
 
 
 class PlanValidationError(Exception):
@@ -216,6 +221,126 @@ def _check_keyframe_ordering(plan: Plan) -> list[str]:
                 )
             prev = cur
     return issues
+
+
+def validate_against_audio(
+    plan: Plan, durations: dict[str, float]
+) -> None:
+    """
+    Run audio-aware validation that requires preprocessing output:
+      - rule 5: no two segments on the same deck overlap
+      - rule 6: track positions in play segments fall within track duration
+    `durations` maps track_id → audio duration in seconds (typically taken
+    from the preprocessor's TrackAnalysis.primary.duration_sec).
+    """
+    issues: list[str] = []
+    issues.extend(_check_track_position_bounds(plan, durations))
+    issues.extend(_check_no_deck_overlap(plan))
+    if issues:
+        raise PlanValidationError(issues)
+
+
+def _check_track_position_bounds(
+    plan: Plan, durations: dict[str, float]
+) -> list[str]:
+    issues: list[str] = []
+    for i, seg in enumerate(plan.timeline):
+        if not isinstance(seg, PlaySegment):
+            continue
+        track = plan.tracks.get(seg.track)
+        if track is None or seg.track not in durations:
+            continue
+        dur_sec = durations[seg.track]
+        try:
+            from_sec = track_pos_to_seconds(seg.from_, track)
+            to_sec = track_pos_to_seconds(seg.to, track)
+        except (ValueError, TypeError) as e:
+            issues.append(f"timeline[{i}] (play): {e}")
+            continue
+        if from_sec < 0 or from_sec > dur_sec:
+            issues.append(
+                f"timeline[{i}] (play): track {seg.track!r} 'from' resolves to "
+                f"{from_sec:.3f}s but track is only {dur_sec:.3f}s long"
+            )
+        if to_sec < 0 or to_sec > dur_sec:
+            issues.append(
+                f"timeline[{i}] (play): track {seg.track!r} 'to' resolves to "
+                f"{to_sec:.3f}s but track is only {dur_sec:.3f}s long"
+            )
+        if to_sec <= from_sec:
+            issues.append(
+                f"timeline[{i}] (play): 'to' ({to_sec:.3f}s) must be after "
+                f"'from' ({from_sec:.3f}s)"
+            )
+    return issues
+
+
+def _check_no_deck_overlap(plan: Plan) -> list[str]:
+    """
+    Compute mix-time spans of every segment, group by deck, sort by start,
+    and flag any overlap. Transitions occupy both from_deck and to_deck.
+    """
+    issues: list[str] = []
+    mix_tempo = resolved_mix_tempo(plan)
+
+    # (deck, mix_start, mix_end, label) per occupancy
+    occupancies: list[tuple[int, float, float, str]] = []
+    # Per-deck running cursor for "implicit start_at = end of previous"
+    deck_cursor: dict[int, float] = {}
+
+    for i, seg in enumerate(plan.timeline):
+        try:
+            spans = _segment_spans(seg, plan, mix_tempo, deck_cursor, i)
+        except (ValueError, TypeError) as e:
+            issues.append(f"timeline[{i}] ({seg.type}): {e}")
+            continue
+        for deck, start, end in spans:
+            occupancies.append((deck, start, end, f"timeline[{i}] ({seg.type})"))
+            deck_cursor[deck] = max(deck_cursor.get(deck, 0.0), end)
+
+    by_deck: dict[int, list[tuple[float, float, str]]] = {}
+    for deck, start, end, label in occupancies:
+        by_deck.setdefault(deck, []).append((start, end, label))
+
+    for deck, segs in by_deck.items():
+        segs.sort()
+        for (s1, e1, l1), (s2, e2, l2) in zip(segs, segs[1:]):
+            if s2 < e1 - 1e-6:  # tolerance for float compare
+                issues.append(
+                    f"deck {deck}: {l1} (mix-time {s1:.3f}–{e1:.3f}s) "
+                    f"overlaps {l2} (mix-time {s2:.3f}–{e2:.3f}s)"
+                )
+    return issues
+
+
+def _segment_spans(
+    seg, plan: Plan, mix_tempo: float, deck_cursor: dict[int, float], idx: int
+) -> list[tuple[int, float, float]]:
+    """Return [(deck, mix_start_sec, mix_end_sec), ...] for the segment."""
+    if isinstance(seg, PlaySegment):
+        track = plan.tracks.get(seg.track)
+        if track is None:
+            return []  # already reported by ref check
+        from_sec = track_pos_to_seconds(seg.from_, track)
+        to_sec = track_pos_to_seconds(seg.to, track)
+        duration = max(0.0, to_sec - from_sec)
+        if seg.start_at is not None:
+            start = mix_pos_to_seconds(seg.start_at, mix_tempo)
+        else:
+            start = deck_cursor.get(seg.deck, 0.0)
+        return [(seg.deck, start, start + duration)]
+    if isinstance(seg, SilenceSegment):
+        duration = duration_to_seconds(seg.duration, mix_tempo)
+        start = deck_cursor.get(seg.deck, 0.0)
+        return [(seg.deck, start, start + duration)]
+    if isinstance(seg, TransitionSegment):
+        start = mix_pos_to_seconds(seg.start_at, mix_tempo)
+        duration = duration_to_seconds(seg.duration, mix_tempo)
+        return [
+            (seg.from_deck, start, start + duration),
+            (seg.to_deck, start, start + duration),
+        ]
+    return []
 
 
 def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
