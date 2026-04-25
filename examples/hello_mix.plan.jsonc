@@ -1,0 +1,86 @@
+// examples/hello_mix.plan.jsonc
+//
+// The simplest possible plan that exercises the v0.1 schema spine.
+// This file IS the M1 acceptance test: if `dj-segue play` runs this
+// correctly, M1 is done.
+//
+// What happens:
+//   - Mix-beat 0–32: Track A plays on deck 1.
+//   - Mix-beat 32:   Hard cut. Track A stops, Track B starts on deck 2.
+//   - Mix-beat 32–64: Track B plays.
+//   - End of mix.
+//
+// No transitions, no automation lanes are required for the basic case;
+// a deck_volume automation is included to demonstrate the automation
+// system end-to-end with a simple 4-beat fade-in on track B.
+
+{
+  "schema_version": "0.1",
+
+  "meta": {
+    "mix_name": "Hello Mix",
+    "author": "dj-segue test fixture",
+    "source_prompt": "smallest possible plan exercising deck switch and one automation lane",
+    "mix_tempo": 120
+  },
+
+  "tracks": {
+    "track_a": {
+      "path": "tests/audio/sine_120bpm_a.wav",
+      "bpm": 120,
+      "key": "C"
+    },
+    "track_b": {
+      "path": "tests/audio/sine_120bpm_b.wav",
+      "bpm": 120,
+      "key": "C"
+    }
+  },
+
+  "decks": {
+    "1": { "label": "deck_a" },
+    "2": { "label": "deck_b" }
+  },
+
+  "timeline": [
+    {
+      "type": "play",
+      "deck": 1,
+      "track": "track_a",
+      "from": { "beat": 0 },
+      "to":   { "beat": 32 },
+      "start_at": { "beat": 0 }
+    },
+    {
+      "type": "play",
+      "deck": 2,
+      "track": "track_b",
+      "from": { "beat": 0 },
+      "to":   { "beat": 32 },
+      "start_at": { "beat": 32 }
+    }
+  ],
+
+  "automation": [
+    // Deck 1 plays at full volume, then cuts off cleanly.
+    {
+      "lane": "deck_volume",
+      "deck": 1,
+      "keyframes": [
+        { "at": { "beat": 0 },  "value": 1.0 },
+        { "at": { "beat": 32 }, "value": 0.0 }
+      ],
+      "interpolation": "step"
+    },
+    // Deck 2 fades in over 4 beats so the entry is gentle, not jarring.
+    {
+      "lane": "deck_volume",
+      "deck": 2,
+      "keyframes": [
+        { "at": { "beat": 32 }, "value": 0.0 },
+        { "at": { "beat": 36 }, "value": 1.0 }
+      ],
+      "interpolation": "linear"
+    }
+  ]
+}
