@@ -83,12 +83,14 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Build backend: hatchling.
 
 ### Open questions
-- **v0.1 tempo behavior is underspecified.** Schema-doc says `mix_tempo` defaults to first track's bpm but doesn't say whether `play` segments tempo-match to mix_tempo or play at original bpm. The example plan dodges this (both tracks at 120, mix_tempo 120). Session B's executor will need to pick one; my read is "play at original bpm" for v0.1 (key/tempo shifting deferred to v0.3 per schema doc). Surface to user before implementing.
-- **Segment-overlap validation is deferred** to the executor because computing mix-time durations of `play` segments depends on the tempo decision above. Validator currently does *not* catch overlapping segments on the same deck.
+- **Segment-overlap validation is deferred** to the executor because computing mix-time durations of `play` segments depends on the resolved tempo behavior. Validator currently does *not* catch overlapping segments on the same deck.
 - **Track-position-within-track-duration validation is deferred** to the preprocessor (schema rule #6) — needs audio file metadata.
 
+### Decisions resolved this session
+- **v0.1 tempo behavior: play segments play at the track's natural bpm. `mix_tempo` is informational (used for converting beat positions in mix-time automation, e.g. `second` → mix-beats).** No tempo-stretching in v0.1. Implication: M2 crossfades will be limited to same-bpm tracks unless we ship a tempo field first. Decided with the user 2026-04-24.
+
 ### Next session should
-- Resolve the tempo question with the user, then begin Session B:
+- Begin Session B (M1 part B). Tempo decision is resolved (above): play at natural bpm, no stretching in v0.1.
   1. Implement preprocessor: BPM/beat-grid via librosa, write `<track>.beats` JSON sidecar, idempotent (skip if cache fresh).
   2. Implement native executor for `play` segments + `deck_volume` automation. Headless (WAV render) first, then live audio via sounddevice.
   3. Wire up `dj-segue preprocess` and `dj-segue play [--render-to]`.
@@ -101,5 +103,6 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Track normalization happens in a `model_validator(mode="before")` on Track — input dict gets `path` rewritten to `stems={"full": path}`. Post-validation, `track.stems` is always a dict and `track.path` doesn't exist on the model. Tests rely on this.
 - `inspect/` package shadows the stdlib `inspect` name. Inside this package, use absolute imports (`import inspect as stdlib_inspect`) if you ever need the stdlib module. Hasn't bitten anything yet.
 - Test audio fixtures are checked in (~3 MB total). If they ever grow, move to git-lfs or a download script — but for sine waves of this size, in-tree is fine.
+- **Long-term tempo direction (post-v0.1, agreed with user 2026-04-24):** tempo will eventually be a **full automation lane** — meaning tempo can change over the course of a mix (DJ tempo builds, gradual matches, etc.), not just be set per-segment. The intermediate step (a static `play.target_bpm` field, additive minor schema bump) is a reasonable bridge if M2 needs mismatched-bpm crossfades before the automation lane lands. Either way, plan for the automation-lane endpoint when designing the executor's tempo handling — don't bake in assumptions that tempo is a per-segment constant.
 
 ---
