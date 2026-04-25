@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dj-segue"
+version = "0.1.0"
+description = "AI-driven DJ system for wordplay transitions between songs"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "rohan" }]
+dependencies = [
+    "pydantic>=2.0,<3",
+    "typer>=0.12",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+dj-segue = "dj_segue.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dj_segue"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Preprocessor caches (sidecar files next to audio)
+*.beats
+*.cue
+
+# Stem separation outputs (large; regenerated on demand)
+**/stems/*.npy
