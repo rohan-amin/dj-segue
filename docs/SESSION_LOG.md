@@ -140,21 +140,21 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - librosa pulls in numba/scipy/soxr — heavy install (~30s on first run).
 
 ### Open questions
-- None blocking. M1 is shipped.
+- **ASK USER FIRST AT START OF NEXT SESSION:** Should the native engine hard-fail (NotImplementedError) or warn-and-skip when a plan declares an automation lane that's not yet implemented (`eq`, `stem_volume`, `crossfader`)? Today these lanes parse and pass schema validation (Session A), but the renderer silently ignores them — which was harmless for M1's deck_volume-only plan but will quietly mislead users as M2+ plans start using them. User-flagged as the lead question for the M2 kickoff (2026-04-24).
+- No other blockers; M1 is shipped.
 
 ### Decisions resolved this session
 - **Tempo behavior implemented as decided last session:** play segments play at track's natural bpm; mix_tempo only converts mix-time positions to seconds. Confirmed correct by the acceptance test (track_a at 120 BPM plays its 32 declared track-beats in exactly 16 seconds).
 - **Live audio is render-then-stream**, not real-time mixing. Architecture's lock-free callback rule is honored trivially because the callback only memcpys finished samples. Real-time mixing in the callback is M2+ scope.
-- **No EQ in v0.1 native engine.** EqLane shapes parse and validate (Session A) but the engine raises nothing yet because the example doesn't use it; if a plan uses an EQ lane the engine will silently ignore it. Should be a clear NotImplementedError. **Surface for next session: decide whether engine should hard-fail on unsupported lanes (eq, stem_volume, crossfader) or warn-and-skip.**
 - **Per-channel/per-deck output buffers are kept transient.** They're allocated per render, summed once, then discarded. For M5 EQ we may need to keep per-deck output for filtering; refactor at that point.
 
 ### Next session should
-- Begin M2 (Crossfades and per-deck automation):
+- **Lead with the open question above (unsupported-lane behavior); resolve with the user before any code.**
+- Then begin M2 (Crossfades and per-deck automation):
   1. Implement `transition` segment compilation (style: crossfade, cut). The compiler should expand transitions into per-deck `deck_volume` automation curves before reaching the renderer (this keeps the renderer simple).
   2. Implement `crossfader` lane and the conversion from crossfader value to per-deck gains (for two-deck setups; multi-deck crossfader is undefined in the schema).
   3. Implement `step` and `exponential` keyframe interpolation tests properly (linear is the only one exercised in M1).
   4. Beat-locked timing: when a transition's `start_at` lands on a beat, audio crossover happens sample-accurately on that beat. Already true in M1's positioning math; add a regression test.
-  5. Decide and implement: native engine behavior on unsupported lanes (open question above).
 - Likely needs new fixture audio with actual transitions to test against.
 
 ### Notes for future sessions
