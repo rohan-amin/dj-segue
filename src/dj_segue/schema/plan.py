@@ -1,6 +1,6 @@
-"""Pydantic models for the dj-segue plan schema (v0.1–v0.3).
+"""Pydantic models for the dj-segue plan schema (v0.1–v0.4).
 
-The shape mirrors `docs/schema-v0.3.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.4.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -238,9 +238,22 @@ class LoopSegment(BaseModel):
 
 TransitionStyle = Literal["crossfade", "cut", "vocal_handoff"]
 
+# v0.4: the gain curve of a crossfade (default "equal_power").
+TransitionCurve = Literal["equal_power", "linear", "exponential"]
+
+
+class TransitionSide(BaseModel):
+    """v0.4: override one side (`out` or `in`) of a crossfade. Unset fields
+    come from the transition; `offset` is from its `start_at` (may be negative)."""
+
+    model_config = _FORBID
+    offset: Duration | None = None
+    duration: Duration | None = None
+    curve: TransitionCurve | None = None
+
 
 class TransitionSegment(BaseModel):
-    model_config = _FORBID
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["transition"]
     id: str | None = None
     style: TransitionStyle
@@ -248,6 +261,20 @@ class TransitionSegment(BaseModel):
     to_deck: int
     start_at: MixPosition
     duration: Duration
+    curve: TransitionCurve | None = None  # v0.4; crossfade only
+    out: TransitionSide | None = None  # v0.4: the from_deck's fade
+    in_: TransitionSide | None = Field(default=None, alias="in")  # v0.4: the to_deck's fade
+
+    @model_validator(mode="after")
+    def _shaping_is_crossfade_only(self) -> "TransitionSegment":
+        if self.style != "crossfade":
+            used = [
+                k for k, v in (("curve", self.curve), ("out", self.out), ("in", self.in_))
+                if v is not None
+            ]
+            if used:
+                raise ValueError(f"{', '.join(used)} only apply to crossfade transitions")
+        return self
 
 
 Segment = Annotated[
@@ -361,6 +388,14 @@ class Plan(BaseModel):
             problems += [
                 f"{where}: {what} requires schema_version 0.3"
                 for where, what in _v03_features(self)
+            ]
+        if v in ("0.1", "0.2", "0.3"):
+            problems += [
+                f"timeline[{i}]: transition {what} requires schema_version 0.4"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, TransitionSegment)
+                for what, val in (("curve", seg.curve), ("out", seg.out), ("in", seg.in_))
+                if val is not None
             ]
         if problems:
             raise ValueError("; ".join(problems))

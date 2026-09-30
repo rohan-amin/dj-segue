@@ -46,6 +46,7 @@ from dj_segue.time_math import (
     duration_to_seconds,
     mix_pos_to_seconds,
     track_pos_to_seconds,
+    transition_windows,
 )
 
 # `equal_power`: a sin/cos fade whose squared gains sum to 1 across a
@@ -197,12 +198,10 @@ def resolve_timeline(
 
     for i, seg in enumerate(plan.timeline):
         if isinstance(seg, TransitionSegment):
-            start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
-            end = start
-            if seg.style != "cut":
-                end += duration_to_seconds(seg.duration, mix_tempo)
             if seg.id is not None:
-                anchors[seg.id] = end
+                # A transition ends when its later side does.
+                out_w, in_w = transition_windows(seg, mix_tempo, anchors)
+                anchors[seg.id] = max(out_w.end_sec, in_w.end_sec)
             continue
         if isinstance(seg, SilenceSegment):
             start = cursor.get(seg.deck, 0.0)
@@ -359,15 +358,14 @@ def transition_envelopes(
     for i, seg in enumerate(plan.timeline):
         if not isinstance(seg, TransitionSegment) or seg.style == "vocal_handoff":
             continue
-        start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
-        if seg.style == "cut":
-            end, shape = start, "step"
-        else:
-            end = start + duration_to_seconds(seg.duration, mix_tempo)
-            shape = "equal_power"
+        out_w, in_w = transition_windows(seg, mix_tempo, anchors)
         label = f"timeline[{i}] {seg.style}"
-        per_deck.setdefault(seg.from_deck, []).append((Ramp(start, end, 1.0, 0.0, shape), label))
-        per_deck.setdefault(seg.to_deck, []).append((Ramp(start, end, 0.0, 1.0, shape), label))
+        per_deck.setdefault(seg.from_deck, []).append(
+            (Ramp(out_w.start_sec, out_w.end_sec, 1.0, 0.0, out_w.curve), label)
+        )
+        per_deck.setdefault(seg.to_deck, []).append(
+            (Ramp(in_w.start_sec, in_w.end_sec, 0.0, 1.0, in_w.curve), label)
+        )
 
     out: dict[int, Envelope] = {}
     for deck, items in per_deck.items():

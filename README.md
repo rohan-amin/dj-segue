@@ -10,7 +10,7 @@ This is an early-stage project. See `docs/milestones.md` for the roadmap.
 
 ## Status
 
-Schema v0.3. General mixing works: plans with crossfades, cuts, volume automation, beatmatched tempo changes and tightening loops render sample-accurately (milestones M1–M2.6, M4). Next: stems (M3).
+Schema v0.4. General mixing works: plans with crossfades, cuts, volume automation, beatmatched tempo changes and tightening loops render sample-accurately (milestones M1–M2.6, M4). Next: stems (M3).
 
 ---
 
@@ -29,7 +29,7 @@ dj-segue scrub      audio/some_track.mp3                # find beat numbers by e
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
 track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`
-and `docs/schema-v0.3.md`.
+and `docs/schema-v0.4.md`.
 
 `dj-segue scrub <file>` opens the track in your browser (a local page; nothing is
 uploaded) to find beat numbers by ear. It shows the whole song as a map — waveform,
@@ -52,7 +52,7 @@ into a plan as `{ "beat": N }`.
 
 A **plan** is a score-style JSONC document describing what each deck does over the course of a mix. It's hand-editable for testing and AI-generated for real use. The plan is engine-agnostic — the same plan can run on the native Python audio engine (default) or via a Mixxx bridge (for cross-validation).
 
-See `docs/architecture.md` for the design rationale and `docs/schema-v0.3.md` for the plan format.
+See `docs/architecture.md` for the design rationale and `docs/schema-v0.4.md` for the plan format.
 
 ---
 

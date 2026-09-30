@@ -22,6 +22,7 @@ from dj_segue.schema.plan import (
     SecondPos,
     SecondsDur,
     Track,
+    TransitionSegment,
 )
 
 BEATS_PER_BAR = 4  # 4/4 assumption
@@ -142,3 +143,38 @@ def duration_to_seconds(dur: Any, tempo: float) -> float:
     if isinstance(dur, SecondsDur):
         return float(dur.seconds)
     raise TypeError(f"Unknown duration type: {type(dur).__name__}")
+
+
+@dataclass(frozen=True)
+class FadeWindow:
+    """One deck's side of a transition, in mix seconds."""
+
+    start_sec: float
+    end_sec: float
+    curve: str  # a ramp shape: "equal_power" | "linear" | "exponential" | "step"
+
+
+def transition_windows(
+    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> tuple[FadeWindow, FadeWindow]:
+    """(out, in): the from_deck's fade-out and the to_deck's fade-in.
+
+    A cut is a zero-length step at `start_at`. A crossfade's sides default to
+    `start_at` + `duration` with `curve` (equal_power); v0.4 `out` / `in`
+    override offset, duration and curve per side.
+    """
+    start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+    if seg.style == "cut":
+        w = FadeWindow(start, start, "step")
+        return w, w
+    duration = duration_to_seconds(seg.duration, mix_tempo)
+    curve = seg.curve or "equal_power"
+
+    def side(o) -> FadeWindow:
+        if o is None:
+            return FadeWindow(start, start + duration, curve)
+        s = start + (duration_to_seconds(o.offset, mix_tempo) if o.offset else 0.0)
+        d = duration_to_seconds(o.duration, mix_tempo) if o.duration else duration
+        return FadeWindow(s, s + d, o.curve or curve)
+
+    return side(seg.out), side(seg.in_)

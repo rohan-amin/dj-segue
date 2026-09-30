@@ -1,6 +1,7 @@
 // examples/starships_omt_slowin.plan.jsonc
 //
-// Variant of starships_omt.plan.jsonc with an asymmetric equal-power handoff:
+// Variant of starships_omt.plan.jsonc with an asymmetric equal-power handoff
+// (a crossfade with an `in` override, schema v0.4):
 // Starships fades out over 8 beats as before, but One More Time fades in over
 // 10 (2 beats slower), reaching full volume 2 beats after Starships is gone.
 //
@@ -19,7 +20,7 @@
 // ours; check them with `dj-segue scrub <file>` and adjust.
 
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
 
   "meta": {
     "mix_name": "Starships into One More Time (tightening loop, slow fade-in)",
@@ -49,23 +50,17 @@
         { "length": { "beats": 2 }, "repetitions": 4 }
       ] },
 
-    // B enters 8 beats before the loop ends; the fades are the automation lanes.
+    // B enters 8 beats before the loop ends.
     { "type": "play", "deck": 2, "track": "omt",
       "from": { "beat": 184 }, "to": { "beat": 240 },
       "start_at": { "after": "a_loop", "offset": { "beats": -8 } },
-      "target_bpm": "mix" }
-  ],
+      "target_bpm": "mix" },
 
-  "automation": [
-    { "lane": "deck_volume", "deck": 1, "interpolation": "equal_power",
-      "keyframes": [
-        { "at": { "after": "a_loop", "offset": { "beats": -8 } }, "value": 1.0 },
-        { "at": { "after": "a_loop" }, "value": 0.0 }
-      ] },
-    { "lane": "deck_volume", "deck": 2, "interpolation": "equal_power",
-      "keyframes": [
-        { "at": { "after": "a_loop", "offset": { "beats": -8 } }, "value": 0.0 },
-        { "at": { "after": "a_loop", "offset": { "beats": 2 } }, "value": 1.0 }
-      ] }
+    // Starships fades out over the 8 beats; One More Time fades in over 10.
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "a_loop", "offset": { "beats": -8 } },
+      "duration": { "beats": 8 },
+      "in": { "duration": { "beats": 10 } } }
   ]
 }

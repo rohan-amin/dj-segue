@@ -140,12 +140,27 @@ def _write_timeline(
         elif isinstance(seg, TransitionSegment):
             start = _fmt_mix_position(seg.start_at, mix_tempo, anchors)
             dur = _fmt_duration(seg.duration)
+            shaping = f"  curve={seg.curve}" if seg.curve else ""
+            for name, side in (("out", seg.out), ("in", seg.in_)):
+                if side is not None:
+                    shaping += f"  {name}=({_fmt_side(side)})"
             out.write(
                 f"  [{i}] transit  {seg.style:<14} "
                 f"deck {seg.from_deck} → deck {seg.to_deck}  "
-                f"start_at={start}  duration={dur}{sid}\n"
+                f"start_at={start}  duration={dur}{shaping}{sid}\n"
             )
     out.write("\n")
+
+
+def _fmt_side(side) -> str:
+    parts = []
+    if side.offset is not None:
+        parts.append(f"offset {_fmt_duration(side.offset)}")
+    if side.duration is not None:
+        parts.append(f"duration {_fmt_duration(side.duration)}")
+    if side.curve is not None:
+        parts.append(side.curve)
+    return ", ".join(parts)
 
 
 def _write_transition_expansion(

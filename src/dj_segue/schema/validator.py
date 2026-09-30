@@ -487,7 +487,7 @@ def _check_transitions(
     Transition sanity (audio-free; all positions are mix-time):
       - from_deck and to_deck differ;
       - `cut` has zero duration (it's instantaneous — write {"beats": 0});
-        `crossfade` has positive duration;
+        `crossfade` has positive duration, on each side (v0.4 `out` / `in`);
       - transitions touching the same deck don't overlap in time;
       - per deck, transitions alternate out/in: a deck can't be faded out
         twice without being faded back in (or vice versa).
@@ -505,8 +505,8 @@ def _check_transitions(
         if mix_tempo is None:
             continue  # timing checks need the tempo; re-checked after preprocess
         try:
-            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
             duration = time_math.duration_to_seconds(seg.duration, mix_tempo)
+            out_w, in_w = time_math.transition_windows(seg, mix_tempo, anchors)
         except (ValueError, TypeError):
             # cue-in-mix-time is reported elsewhere; an `after` that can't be
             # resolved yet is re-checked once grids are available.
@@ -515,11 +515,12 @@ def _check_transitions(
             issues.append(
                 f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'
             )
-        if seg.style != "cut" and duration <= 0:
-            issues.append(f"{label}: duration must be positive")
-        end = start + (0.0 if seg.style == "cut" else duration)
-        per_deck.setdefault(seg.from_deck, []).append((start, end, -1, label))
-        per_deck.setdefault(seg.to_deck, []).append((start, end, +1, label))
+        if seg.style != "cut":
+            for name, w in (("out", out_w), ("in", in_w)):
+                if w.end_sec - w.start_sec <= 0:
+                    issues.append(f"{label}: {name} fade duration must be positive")
+        per_deck.setdefault(seg.from_deck, []).append((out_w.start_sec, out_w.end_sec, -1, label))
+        per_deck.setdefault(seg.to_deck, []).append((in_w.start_sec, in_w.end_sec, +1, label))
 
     for deck, items in sorted(per_deck.items()):
         items.sort()
