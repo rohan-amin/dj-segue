@@ -19,13 +19,15 @@
 // The beat numbers came from the old prototype, whose grid may differ from
 // ours; check them with `dj-segue scrub <file>` and adjust.
 
+// The mix tempo is left out, so it follows Starships (the first track on the
+// timeline) at its detected tempo.
+
 {
   "schema_version": "0.4",
 
   "meta": {
     "mix_name": "Starships into One More Time (tightening loop, slow fade-in)",
-    "source_prompt": "loop Starships, tighten the loop, crossfade into One More Time",
-    "mix_tempo": 125
+    "source_prompt": "loop Starships, tighten the loop, crossfade into One More Time"
   },
 
   "tracks": {

@@ -216,3 +216,21 @@ def test_two_crossfader_lanes_are_rejected(minimal_plan_data) -> None:
     lane = {"lane": "crossfader", "keyframes": [{"at": {"beat": 0}, "value": 0.0}]}
     minimal_plan_data["automation"] += [lane, dict(lane)]
     assert any("only one crossfader" in m for m in _issues(minimal_plan_data))
+
+
+def test_default_mix_tempo_follows_the_first_track_on_the_timeline() -> None:
+    from dj_segue.schema.validator import resolved_mix_tempo, tempo_track
+
+    plan = Plan.model_validate({
+        "schema_version": "0.2",
+        "meta": {"mix_name": "t"},
+        # Declared in the opposite order to how they play.
+        "tracks": {"b": {"path": "b.wav", "bpm": 100}, "a": {"path": "a.wav", "bpm": 128}},
+        "decks": {"1": {}},
+        "timeline": [
+            {"type": "play", "deck": 1, "track": "a", "from": {"beat": 0}, "to": {"beat": 4}},
+            {"type": "play", "deck": 1, "track": "b", "from": {"beat": 0}, "to": {"beat": 4}},
+        ],
+    })
+    assert tempo_track(plan) == "a"
+    assert resolved_mix_tempo(plan) == 128

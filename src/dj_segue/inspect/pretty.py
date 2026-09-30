@@ -26,6 +26,7 @@ from dj_segue.schema.validator import (
     PlanValidationError,
     position_to_mix_beats,
     resolved_mix_tempo,
+    tempo_track,
     validate_plan,
 )
 
@@ -63,11 +64,13 @@ def _write_header(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
     out.write(f"== {plan.meta.mix_name} ==\n")
     out.write(f"schema_version : {plan.schema_version}\n")
     if mix_tempo is None:
-        out.write("mix_tempo      : auto  (first track's detected bpm; known after preprocess)")
+        out.write(
+            f"mix_tempo      : auto  ({tempo_track(plan)}'s detected bpm; known after preprocess)"
+        )
     else:
         out.write(f"mix_tempo      : {mix_tempo:g} bpm")
         if plan.meta.mix_tempo is None:
-            out.write("  (default: first track's bpm)")
+            out.write(f"  (default: {tempo_track(plan)}'s bpm)")
     out.write("\n")
     if plan.meta.author:
         out.write(f"author         : {plan.meta.author}\n")

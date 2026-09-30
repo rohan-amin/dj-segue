@@ -99,19 +99,30 @@ def _try_anchors(
 def resolved_mix_tempo(
     plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None
 ) -> float | None:
-    """The plan's effective mix tempo: `meta.mix_tempo`, else the first track's
-    bpm (declared, or detected via `grids`). None when it defaults to an
-    auto-detected bpm and no grids are given (i.e. before preprocessing)."""
+    """The plan's effective mix tempo: `meta.mix_tempo`, else the bpm of the
+    first track on the timeline (declared, or detected via `grids`). None when
+    it defaults to an auto-detected bpm and no grids are given (i.e. before
+    preprocessing)."""
     if plan.meta.mix_tempo is not None:
         return plan.meta.mix_tempo
-    if not plan.tracks:
+    tid = tempo_track(plan)
+    if tid is None:
         return 120.0
-    tid, track = next(iter(plan.tracks.items()))
+    track = plan.tracks[tid]
     if track.bpm is not None:
         return track.bpm
     if grids and tid in grids:
         return grids[tid].bpm
     return None
+
+
+def tempo_track(plan: Plan) -> str | None:
+    """The track that sets the default mix tempo: the first one a play or
+    loop segment uses, in timeline order (else the first declared track)."""
+    for seg in plan.timeline:
+        if isinstance(seg, (PlaySegment, LoopSegment)) and seg.track in plan.tracks:
+            return seg.track
+    return next(iter(plan.tracks), None)
 
 
 def position_to_mix_beats(

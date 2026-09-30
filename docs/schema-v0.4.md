@@ -80,7 +80,7 @@ Beats are strongly preferred. Seconds are an escape hatch.
     "author": "rohan",
     "source_prompt": "mix Started From The Bottom into Middle Child via wordplay on 'bottom'",
     "created_at": "2026-04-25T01:00:00Z",
-    "mix_tempo": 86,             // optional; default = first track's BPM (declared or detected)
+    "mix_tempo": 86,             // optional; default = BPM (declared or detected) of the first track on the timeline
     "target_executor": "native"  // "native" | "mixxx"; informational only
   },
 
