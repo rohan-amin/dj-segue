@@ -25,7 +25,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ---
 
-## M2 — Crossfades and per-deck automation
+## M2 — Crossfades and per-deck automation  (DONE 2026-09-29)
 
 **Goal:** Real DJ transitions.
 
@@ -34,8 +34,38 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - Compiler that expands transitions into per-deck volume automation.
 - All `interpolation` modes (linear, step, exponential).
 - Beat-locked timing: when `start_at` is on a beat, audio crossover happens sample-accurately on that beat.
+- `crossfader` lane (two-deck gain law).
+- Unsupported lanes/segments hard-fail with `NotImplementedError` naming the milestone that adds them — never silently ignored (decided 2026-09-29).
 
 **Acceptance test:** A 3-track mix with two crossfades sounds right; rendered WAV matches golden.
+
+---
+
+## M2.5 — Tempo matching  (DONE 2026-09-29)
+
+**Goal:** Beatmatch tracks with different BPMs — required for general mixing. (Added 2026-09-29.)
+
+**Scope in:**
+- `play.target_bpm` (additive minor schema bump, v0.2): time-stretch a segment to a target tempo via the `rubberband` CLI (R3 engine). Pitch preserved.
+- `track.bpm` optional (v0.2): detected by default by fitting a fixed grid to onset energy; a declared value overrides.
+- Beat grids anchored to the detected beat phase (`TrackGrid`), so beat positions line up with real audio.
+- Real-music fixtures (local, git-ignored `audio/`) for integration testing.
+- Executor tempo handling designed for the eventual tempo automation lane — don't bake in "tempo is a per-segment constant".
+
+**Acceptance test:** Two real tracks at different BPMs crossfade with beats audibly aligned through the transition.
+
+---
+
+## M2.6 — Grid robustness  (DONE 2026-09-30)
+
+**Goal:** Beat grids that are right on real music, including which beat is a bar's "1". (Added 2026-09-30, after comparing with Mixxx's analyzer.)
+
+**Scope in:**
+- Half-beat disambiguation: the kick/bass band decides beat vs. off-beat (loud off-beat hi-hats pulled the grid half a beat off).
+- BPM rounding to musical values (whole, ½, ⅓, ¼) when drift over the track stays under 10 ms (after Mixxx's `roundBpmWithinRange`).
+- Downbeat detection via beat_this (optional `downbeats` extra); beat 0 = first downbeat.
+
+**Acceptance test:** Loud-hat drum patterns lock to the kick; whole-number tempos detect exactly; trimming k beats off a track's start moves beat 0 by k (verified 8/8 on two real tracks).
 
 ---
 
@@ -74,12 +104,13 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - 3-band EQ per deck and per stem (port `professional_eq.py`).
 - Lowpass/highpass filter automation lane.
 - Crossfaded coefficient updates (no zipper noise).
+- Master limiter on the mix output, so stretched/summed peaks above 0 dBFS don't hard-clip (decided 2026-09-30; no interim gain cut).
 
 **Acceptance test:** A transition that kills the lows on the outgoing track over the last 4 beats while keeping vocals intact.
 
 ---
 
-## M6 — The planner
+## M6 — The planner  (DEFERRED 2026-09-29: general mixing first)
 
 **Goal:** AI-generated plans from English.
 
@@ -93,7 +124,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ---
 
-## M7 — Mixxx fallback executor
+## M7 — Mixxx fallback executor  (DEFERRED 2026-09-29)
 
 **Goal:** Validate the architecture by porting the existing Mixxx bridge as an alternative executor.
 

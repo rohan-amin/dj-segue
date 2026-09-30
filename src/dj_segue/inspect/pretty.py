@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 
+from dj_segue.compiler import transition_envelopes
 from dj_segue.schema.plan import (
     BarPos,
     BeatPos,
@@ -35,6 +36,7 @@ def format_plan(plan: Plan, *, run_validation: bool = True) -> str:
     _write_tracks(out, plan)
     _write_decks(out, plan)
     _write_timeline(out, plan, mix_tempo)
+    _write_transition_expansion(out, plan, mix_tempo)
     _write_automation(out, plan, mix_tempo)
     if run_validation:
         _write_validation(out, plan)
@@ -44,12 +46,15 @@ def format_plan(plan: Plan, *, run_validation: bool = True) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _write_header(out: StringIO, plan: Plan, mix_tempo: float) -> None:
+def _write_header(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
     out.write(f"== {plan.meta.mix_name} ==\n")
     out.write(f"schema_version : {plan.schema_version}\n")
-    out.write(f"mix_tempo      : {mix_tempo} bpm")
-    if plan.meta.mix_tempo is None:
-        out.write("  (default: first track's bpm)")
+    if mix_tempo is None:
+        out.write("mix_tempo      : auto  (first track's detected bpm; known after preprocess)")
+    else:
+        out.write(f"mix_tempo      : {mix_tempo:g} bpm")
+        if plan.meta.mix_tempo is None:
+            out.write("  (default: first track's bpm)")
     out.write("\n")
     if plan.meta.author:
         out.write(f"author         : {plan.meta.author}\n")
@@ -69,7 +74,8 @@ def _write_tracks(out: StringIO, plan: Plan) -> None:
             stems_part = f"path={track.stems['full']}"
         else:
             stems_part = f"stems=[{', '.join(stem_names)}]"
-        out.write(f"  {tid:<16} bpm={track.bpm}{key_part}  {stems_part}\n")
+        bpm = "auto" if track.bpm is None else f"{track.bpm:g}"
+        out.write(f"  {tid:<16} bpm={bpm}{key_part}  {stems_part}\n")
         if track.cues:
             for cue_name, cue in track.cues.items():
                 where = _fmt_cue_position(cue)
@@ -87,16 +93,17 @@ def _write_decks(out: StringIO, plan: Plan) -> None:
     out.write("\n")
 
 
-def _write_timeline(out: StringIO, plan: Plan, mix_tempo: float) -> None:
+def _write_timeline(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
     out.write(f"-- timeline ({len(plan.timeline)} segments) --\n")
     for i, seg in enumerate(plan.timeline):
         if isinstance(seg, PlaySegment):
             start = _fmt_mix_position(seg.start_at, mix_tempo, default="(after prev on deck)")
             from_ = _fmt_track_position(seg.from_)
             to = _fmt_track_position(seg.to)
+            tempo = f"  @ {seg.target_bpm:g} bpm" if seg.target_bpm is not None else ""
             out.write(
                 f"  [{i}] play     deck {seg.deck}  track={seg.track}  "
-                f"track[{from_} → {to}]  start_at={start}\n"
+                f"track[{from_} → {to}]  start_at={start}{tempo}\n"
             )
         elif isinstance(seg, SilenceSegment):
             dur = _fmt_duration(seg.duration)
@@ -112,7 +119,37 @@ def _write_timeline(out: StringIO, plan: Plan, mix_tempo: float) -> None:
     out.write("\n")
 
 
-def _write_automation(out: StringIO, plan: Plan, mix_tempo: float) -> None:
+def _write_transition_expansion(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
+    """Show the per-deck gain ramps that crossfade/cut transitions compile to."""
+    if not any(isinstance(s, TransitionSegment) for s in plan.timeline):
+        return
+    if mix_tempo is None:
+        out.write("-- transition expansion --\n  (after preprocess: mix tempo is auto)\n\n")
+        return
+    try:
+        envs = transition_envelopes(plan, mix_tempo)
+    except (ValueError, TypeError) as e:  # e.g. cue ref in start_at
+        out.write(f"-- transition expansion --\n  (cannot expand: {e})\n\n")
+        return
+    out.write("-- transition expansion (per-deck gain) --\n")
+    if not envs:
+        out.write("  (none compiled; vocal_handoff is stem-level, M3)\n\n")
+        return
+    beats_per_sec = mix_tempo / 60.0
+    for deck in sorted(envs):
+        env = envs[deck]
+        out.write(f"  deck {deck}: starts at gain {env.initial:g}  ({env.source})\n")
+        for r in env.ramps:
+            b1 = r.start_sec * beats_per_sec
+            b2 = r.end_sec * beats_per_sec
+            span = f"beat {b1:g}" if b1 == b2 else f"beat {b1:g} → {b2:g}"
+            out.write(
+                f"        {span}: {r.start_value:g} → {r.end_value:g}  ({r.shape})\n"
+            )
+    out.write("\n")
+
+
+def _write_automation(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
     out.write(f"-- automation ({len(plan.automation)} lanes) --\n")
     if not plan.automation:
         out.write("  (none)\n\n")
@@ -171,7 +208,7 @@ def _fmt_track_position(pos) -> str:
     return repr(pos)
 
 
-def _fmt_mix_position(pos, mix_tempo: float, default: str = "?") -> str:
+def _fmt_mix_position(pos, mix_tempo: float | None, default: str = "?") -> str:
     if pos is None:
         return default
     raw = _fmt_track_position(pos)

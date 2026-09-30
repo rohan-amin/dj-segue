@@ -14,7 +14,12 @@ import numpy as np
 
 from dj_segue.analyzer.beat import ANALYZER_ID, BeatAnalysis
 
-CACHE_SCHEMA_VERSION = 1
+# v2: added grid_anchor_sec (fixed-grid phase origin).
+# v3: grid fit from onset peaks; detected_bpm may be null; beat_times replaced
+#     by onset_times/onset_weights.
+# v4: onset_low_weights (half-beat check) and downbeat_times (may be null).
+# Each bump invalidates older caches.
+CACHE_SCHEMA_VERSION = 4
 CACHE_SUFFIX = ".beats"
 
 
@@ -27,13 +32,25 @@ class CacheEntry:
     audio_sample_rate: int
     audio_n_samples: int
     audio_duration_sec: float
-    detected_bpm: float
-    beat_times: list[float]
+    detected_bpm: float | None
+    grid_anchor_sec: float
+    onset_times: list[float]
+    onset_weights: list[float]
+    onset_low_weights: list[float]
+    downbeat_times: list[float] | None
 
     def to_analysis(self) -> BeatAnalysis:
         return BeatAnalysis(
             detected_bpm=self.detected_bpm,
-            beat_times=np.asarray(self.beat_times, dtype=np.float64),
+            grid_anchor_sec=self.grid_anchor_sec,
+            onset_times=np.asarray(self.onset_times, dtype=np.float64),
+            onset_weights=np.asarray(self.onset_weights, dtype=np.float64),
+            onset_low_weights=np.asarray(self.onset_low_weights, dtype=np.float64),
+            downbeat_times=(
+                None
+                if self.downbeat_times is None
+                else np.asarray(self.downbeat_times, dtype=np.float64)
+            ),
             sample_rate=self.audio_sample_rate,
             n_samples=self.audio_n_samples,
         )
@@ -68,7 +85,15 @@ def write_cache(audio_path: Path, analysis: BeatAnalysis) -> Path:
         audio_n_samples=analysis.n_samples,
         audio_duration_sec=analysis.duration_sec,
         detected_bpm=analysis.detected_bpm,
-        beat_times=[float(t) for t in analysis.beat_times],
+        grid_anchor_sec=analysis.grid_anchor_sec,
+        onset_times=[round(float(t), 6) for t in analysis.onset_times],
+        onset_weights=[round(float(w), 4) for w in analysis.onset_weights],
+        onset_low_weights=[round(float(w), 4) for w in analysis.onset_low_weights],
+        downbeat_times=(
+            None
+            if analysis.downbeat_times is None
+            else [round(float(t), 4) for t in analysis.downbeat_times]
+        ),
     )
     cp = cache_path(audio_path)
     cp.write_text(json.dumps(asdict(entry), indent=2))

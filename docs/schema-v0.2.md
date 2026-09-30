@@ -1,6 +1,6 @@
-# dj-segue Plan Schema — v0.1
+# dj-segue Plan Schema — v0.2
 
-**Status:** v0.1 — initial release. Schema is versioned (`schema_version` field). Breaking changes bump the major version; additive changes bump the minor.
+**Status:** v0.2 — additive over v0.1 (see [Changes from v0.1](#changes-from-v01)); v0.1 plans remain valid. Schema is versioned (`schema_version` field). Breaking changes bump the major version; additive changes bump the minor.
 
 **Format:** JSONC (JSON with comments) for source files. Strict JSON for any tooling that needs the spec.
 
@@ -30,7 +30,15 @@ The master clock. Mix-beat 0 is the moment audio output begins. The mix has a te
 ### Track-time
 Each track has its own internal time, in beats. Independent of mix-time.
 
-Track beats are **grid-relative**: beat 0 is the track's first detected beat (the grid anchor, found by the preprocessor), not necessarily sample 0. `t(beat) = anchor_sec + beat × 60 / bpm`, with `bpm` the track's declared tempo. `bar` positions and beat/bar cues follow the same grid. `second` positions (and `second` cues) are absolute file time and are never shifted. For audio with no detectable beats the anchor is 0. (Clarified 2026-09-29.)
+Track beats are **grid-relative**. The preprocessor fits each track a fixed beat grid, `t(beat) = anchor_sec + beat × 60 / bpm`:
+
+- `bpm` is the track's detected tempo, or its declared `bpm` when the plan gives one.
+- `anchor_sec` is **beat 0: the track's first downbeat** (a bar's "1") at or after the start of the file, with 20 ms tolerance so a downbeat right at the start is beat 0. So beats 0, 4, 8, … are downbeats, and `bar` N = beat 4N.
+- The beat phase is fitted to onset energy, with the kick/bass band deciding beat vs. off-beat. Downbeats come from the beat_this model (optional install). Without it, beat 0 is the first grid beat and may be 1–3 beats off a real "1"; shift positions by whole beats to line up phrases.
+- Detected tempos snap to a musical value (whole, ½, ⅓, ¼ BPM) when that drifts less than 10 ms over the track.
+- `bar` positions and beat/bar cues follow the same grid (4/4).
+- `second` positions (and `second` cues) are absolute file time and are never shifted.
+- Audio with no detectable beat gets anchor 0 (beat 0 == sample 0) and must declare `bpm`.
 
 ### Position specifiers
 Anywhere a position is needed, the schema accepts one of:
@@ -68,7 +76,7 @@ Beats are strongly preferred. Seconds are an escape hatch.
     "author": "rohan",
     "source_prompt": "mix Started From The Bottom into Middle Child via wordplay on 'bottom'",
     "created_at": "2026-04-25T01:00:00Z",
-    "mix_tempo": 86,             // optional; default = first track's BPM
+    "mix_tempo": 86,             // optional; default = first track's BPM (declared or detected)
     "target_executor": "native"  // "native" | "mixxx"; informational only
   },
 
@@ -98,7 +106,7 @@ Top-level dict, keyed by an arbitrary handle (used everywhere else in the plan).
       "other":  "audio/started/other.npy"
     },
 
-    "bpm": 86,
+    "bpm": 86,                   // optional: omit to auto-detect
     "key": "F#m",
 
     "cues": {
@@ -114,7 +122,7 @@ Top-level dict, keyed by an arbitrary handle (used everywhere else in the plan).
 **Rules:**
 - Exactly one of `path` or `stems` must be present.
 - `path` is shorthand for `{ "stems": { "full": "<path>" } }`.
-- `bpm` is mandatory in v0.1 (the analyzer fills it; users rarely write it by hand).
+- `bpm` is **optional** (v0.2). Omitted → the preprocessor detects it (the normal case). A number overrides detection and is used exactly, which is how you fix a misdetected track (e.g. half/double tempo). The beat phase is detected either way. A track with no `bpm` and no detectable beat is an error at preprocess time.
 - `key` is optional, used for compatibility checks and key-shifting decisions.
 - Cue handles are local to the track. `started.bottom_word` and `middle.bottom_word` don't collide.
 - Cue positions are track-relative.
@@ -150,11 +158,14 @@ An ordered list of segments. Each segment describes what one deck does over a sp
   "track": "started",
   "from": "intro_drop",          // track position; or { "beat": 32 }
   "to":   "bottom_word",
-  "start_at": { "beat": 0 }      // mix position; defaults to "immediately after previous segment on this deck"
+  "start_at": { "beat": 0 },     // mix position; defaults to "immediately after previous segment on this deck"
+  "target_bpm": 86               // optional (v0.2): play at this tempo
 }
 ```
 
 If `start_at` is omitted, the segment begins immediately after the previous segment on the same deck (or at mix-beat 0 if first).
+
+`target_bpm` (v0.2) time-stretches the segment so the track plays at that tempo, pitch preserved. The playback rate is `target_bpm / track bpm`, so a segment covering N track-beats lasts N beats at `target_bpm` in the mix. Set it to `meta.mix_tempo` to beatmatch a track to the mix. Omitted → the track plays at its natural tempo.
 
 #### `silence` — a deck is silent
 ```jsonc
@@ -168,6 +179,8 @@ If `start_at` is omitted, the segment begins immediately after the previous segm
 Used to pad a deck's timeline. Rarely needed; gaps in a deck's segment list imply silence.
 
 #### `transition` — high-level sugar for a multi-deck handoff
+
+A transition only changes gain. It doesn't start or stop playback, so the decks' `play` segments must cover the transition window. A deck that is the target of a transition is silent until that transition starts.
 ```jsonc
 {
   "type": "transition",
@@ -180,6 +193,10 @@ Used to pad a deck's timeline. Rarely needed; gaps in a deck's segment list impl
 ```
 
 Transitions are *compiled* by the loader into deterministic per-deck volume automations and (where applicable) stem-level operations. The expansion is visible via `dj-segue inspect` for debugging.
+
+- `crossfade`: equal-power (sin/cos) fade over `duration`, so loudness doesn't dip mid-fade.
+- `cut`: instantaneous at `start_at`; `duration` must be `{ "beats": 0 }`.
+- Transitions touching the same deck must not overlap, and must alternate out/in per deck.
 
 For `style: "vocal_handoff"` (stem-aware), tracks must have stems available; the compiler swaps vocal stems at the boundary while crossfading other stems over `duration`.
 
@@ -230,7 +247,7 @@ Time-varying parameter changes. A flat list of *lanes*, each targeting one param
 | `deck_volume`  | `deck`                     | linear gain, 0.0–1.0              |
 | `stem_volume`  | `deck`, `stem`             | linear gain, 0.0–1.0              |
 | `eq`           | `deck`, `band`             | dB, –24 to +12 (per band)         |
-| `crossfader`   | (none)                     | –1.0 (full deck 1) to +1.0 (full deck 2) |
+| `crossfader`   | (none)                     | –1.0 (full deck 1) to +1.0 (full deck 2); equal-power law, centre = 0.707 each; decks 1–2 only; at most one lane |
 
 ### Keyframe rules
 
@@ -240,7 +257,7 @@ Time-varying parameter changes. A flat list of *lanes*, each targeting one param
 - The last keyframe sets the final value; the parameter holds that value for all mix-times after it.
 - `step` interpolation: value jumps at each keyframe.
 - `linear` interpolation: linear ramp between keyframes.
-- `exponential`: exponential ramp (useful for volume fades that sound natural).
+- `exponential`: constant ratio per unit time, i.e. linear in dB (natural-sounding volume fades). A 0 endpoint is treated as -60 dB, then snaps to exactly 0 at the keyframe. Ranges that cross zero (the crossfader) fall back to linear.
 
 ### Automated parameter values
 
@@ -267,6 +284,15 @@ Any keyframe `value` may itself be a constant or a reference to another automati
 See `examples/hello_mix.plan.jsonc` for a minimal complete plan. It's also the v0.1 acceptance test — if the engine can play it, M1 is done.
 
 ---
+
+## Changes from v0.1
+
+- `track.bpm` is optional; omitted → detected by the preprocessor. A declared value overrides detection.
+- `play.target_bpm` time-stretches a segment to a tempo.
+- Clarified: track beats are counted on the fitted grid (see *Track-time*).
+- Clarified transition, crossfader and exponential-interpolation semantics (implemented in M2; valid in v0.1 plans too).
+
+A plan declaring `"schema_version": "0.1"` must give every track a `bpm` and may not use `target_bpm`.
 
 ## Versioning policy
 

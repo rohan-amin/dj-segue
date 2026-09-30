@@ -1,0 +1,55 @@
+// examples/crossfade_mix.plan.jsonc
+//
+// M2 acceptance plan: three tracks, two crossfades.
+//
+// What happens (mix_tempo 120, so 1 beat = 0.5s):
+//   - Mix-beat 0–32:  Track A (440 Hz) on deck 1.
+//   - Mix-beat 24:    Track B (660 Hz) starts on deck 2, silent.
+//   - Mix-beat 24–32: 8-beat equal-power crossfade deck 1 → deck 2.
+//   - Mix-beat 48:    Track C (550 Hz) starts on deck 1 (A has finished), silent.
+//   - Mix-beat 48–56: 8-beat equal-power crossfade deck 2 → deck 1.
+//   - Mix-beat 56–80: Track C alone. End of mix at 40s.
+//
+// Note the play segments overlap the transition windows on purpose: a
+// transition only moves gain between decks that are already playing.
+
+{
+  "schema_version": "0.1",
+
+  "meta": {
+    "mix_name": "Crossfade Mix",
+    "author": "dj-segue test fixture",
+    "source_prompt": "three tracks joined by two 8-beat crossfades",
+    "mix_tempo": 120
+  },
+
+  "tracks": {
+    "track_a": { "path": "tests/audio/sine_120bpm_a.wav", "bpm": 120 },
+    "track_b": { "path": "tests/audio/sine_120bpm_b.wav", "bpm": 120 },
+    "track_c": { "path": "tests/audio/sine_120bpm_c.wav", "bpm": 120 }
+  },
+
+  "decks": {
+    "1": { "label": "left" },
+    "2": { "label": "right" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "track_a",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 0 } },
+
+    { "type": "play", "deck": 2, "track": "track_b",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 24 } },
+
+    { "type": "transition", "style": "crossfade", "from_deck": 1, "to_deck": 2,
+      "start_at": { "beat": 24 }, "duration": { "beats": 8 } },
+
+    { "type": "play", "deck": 1, "track": "track_c",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 48 } },
+
+    { "type": "transition", "style": "crossfade", "from_deck": 2, "to_deck": 1,
+      "start_at": { "beat": 48 }, "duration": { "beats": 8 } }
+  ],
+
+  "automation": []
+}

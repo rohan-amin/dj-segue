@@ -10,21 +10,24 @@ This is an early-stage project. See `docs/milestones.md` for the roadmap.
 
 ## Status
 
-Pre-v0.1. Currently building Milestone 1 (the basic audio engine spine).
+Schema v0.2. General mixing works: plans with crossfades, cuts, volume automation and beatmatched tempo changes render sample-accurately (milestones M1–M2.6). Next: stems (M3).
 
 ---
 
 ## Quick start
 
-> Coming once M1 is implemented. Approximately:
->
-> ```bash
-> pip install -e .
-> dj-segue inspect  examples/hello_mix.plan.jsonc
-> dj-segue preprocess examples/hello_mix.plan.jsonc
-> dj-segue play examples/hello_mix.plan.jsonc
-> dj-segue play examples/hello_mix.plan.jsonc --render-to /tmp/out.wav
-> ```
+```bash
+brew install rubberband          # time-stretching (Debian/Ubuntu: apt install rubberband-cli)
+pip install -e ".[dev,downbeats]"   # `downbeats` is optional (PyTorch)
+
+dj-segue inspect    examples/crossfade_mix.plan.jsonc   # plan summary + validation
+dj-segue preprocess examples/crossfade_mix.plan.jsonc   # analyze tracks (tempo, beat grid)
+dj-segue play       examples/crossfade_mix.plan.jsonc   # play through the speakers
+dj-segue play       examples/crossfade_mix.plan.jsonc --render-to /tmp/out.wav
+```
+
+To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
+track `path`s at them. See `examples/real_mix.plan.jsonc` and `docs/schema-v0.2.md`.
 
 ---
 

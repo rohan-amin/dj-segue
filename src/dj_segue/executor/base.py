@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from dj_segue.schema.plan import Plan
+from dj_segue.time_math import TrackGrid
 
 
 @dataclass(frozen=True)
@@ -31,13 +32,34 @@ class MixExecutor(ABC):
     """A plan-rendering engine. Implementations: native (sounddevice + WAV), mixxx (later)."""
 
     @abstractmethod
-    def render(self, plan: Plan, audio_root: Path) -> RenderResult:
-        """Render the plan to an in-memory float32 stereo buffer."""
+    def render(
+        self,
+        plan: Plan,
+        audio_root: Path,
+        grids: dict[str, TrackGrid] | None = None,
+    ) -> RenderResult:
+        """Render the plan to an in-memory float32 stereo buffer.
+
+        `grids` maps track_id → resolved beat grid (from PreprocessResult.grids()).
+        When omitted, track positions resolve against a zero-anchor grid at the
+        declared bpm (beat 0 == sample 0).
+        """
 
     @abstractmethod
-    def render_to_wav(self, plan: Plan, audio_root: Path, out_path: Path) -> RenderResult:
+    def render_to_wav(
+        self,
+        plan: Plan,
+        audio_root: Path,
+        out_path: Path,
+        grids: dict[str, TrackGrid] | None = None,
+    ) -> RenderResult:
         """Render the plan and write to a WAV file. Returns the same buffer."""
 
     @abstractmethod
-    def play_live(self, plan: Plan, audio_root: Path) -> RenderResult:
+    def play_live(
+        self,
+        plan: Plan,
+        audio_root: Path,
+        grids: dict[str, TrackGrid] | None = None,
+    ) -> RenderResult:
         """Render the plan and stream it to the default audio output device."""

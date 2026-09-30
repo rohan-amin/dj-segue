@@ -1,0 +1,51 @@
+// examples/real_mix.plan.jsonc
+//
+// M2.5 demo on real music: needs your own copies of the two tracks in the
+// git-ignored audio/ folder (see README). Not used by the test suite.
+//
+// Both tracks omit `bpm`, so the preprocessor detects it
+// (One More Time ≈ 122.88, Starships ≈ 125.00). Each play segment
+// time-stretches its track to the mix tempo, 124, so beats line up.
+//
+//   - Mix-beat 0–192:   One More Time on deck 1 (its beats 0–192).
+//   - Mix-beat 160:     Starships starts on deck 2, silent, beat-locked.
+//   - Mix-beat 160–192: 32-beat (8-bar) equal-power crossfade.
+//   - Mix-beat 192–416: Starships alone (its beats 32–256).
+//
+// Caveat: the grid is beat-accurate but not bar-aware, so the tracks' bar
+// "1"s may be offset by 1–3 beats. Shift a `from` by whole beats to fix.
+
+{
+  "schema_version": "0.2",
+
+  "meta": {
+    "mix_name": "Real Mix",
+    "source_prompt": "beatmatched 8-bar crossfade between two ~123/125 BPM tracks",
+    "mix_tempo": 124
+  },
+
+  "tracks": {
+    "omt":       { "path": "audio/01 - One More Time.mp3" },
+    "starships": { "path": "audio/DJ's International - Starships (Original Mix).mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "left" },
+    "2": { "label": "right" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "omt",
+      "from": { "beat": 0 }, "to": { "beat": 192 },
+      "start_at": { "beat": 0 }, "target_bpm": 124 },
+
+    { "type": "play", "deck": 2, "track": "starships",
+      "from": { "beat": 0 }, "to": { "beat": 256 },
+      "start_at": { "beat": 160 }, "target_bpm": 124 },
+
+    { "type": "transition", "style": "crossfade", "from_deck": 1, "to_deck": 2,
+      "start_at": { "beat": 160 }, "duration": { "beats": 32 } }
+  ],
+
+  "automation": []
+}

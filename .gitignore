@@ -19,3 +19,6 @@ venv/
 
 # Stem separation outputs (large; regenerated on demand)
 **/stems/*.npy
+
+# Local music for real-audio mixing/testing (copyrighted; never commit)
+/audio/

@@ -1,4 +1,4 @@
-"""Generate the M1 test audio fixtures.
+"""Generate the sine test audio fixtures (M1, M2).
 
 Sine tones at 120 BPM context: 32 beats = 16 seconds. We render 17 seconds
 to give a small head-room above the example plan's `to: beat 32` boundary.
@@ -21,6 +21,7 @@ AMPLITUDE = 0.5  # leave headroom; -6 dBFS roughly
 FIXTURES = {
     "sine_120bpm_a.wav": 440.0,  # A4
     "sine_120bpm_b.wav": 660.0,  # E5 (perfect fifth above A4)
+    "sine_120bpm_c.wav": 550.0,  # C#5 (major third above A4); M2 3-track mix
 }
 
 

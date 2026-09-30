@@ -31,11 +31,12 @@ from dj_segue.schema.plan import (
     StemVolumeLane,
     TransitionSegment,
 )
-from dj_segue.time_math import (
-    duration_to_seconds,
-    mix_pos_to_seconds,
-    track_pos_to_seconds,
-)
+from dj_segue.constants import ANCHOR_TOLERANCE
+
+# Module import (not `from ... import names`): time_math imports schema.plan,
+# which initializes this package, which imports this module — so time_math
+# may be only partially initialized here. Names are looked up at call time.
+from dj_segue import time_math
 
 
 class PlanValidationError(Exception):
@@ -47,14 +48,24 @@ class PlanValidationError(Exception):
         super().__init__(f"{len(self.issues)} validation issue(s):\n  - {joined}")
 
 
-def validate_plan(plan: Plan) -> None:
+def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None) -> None:
+    """Audio-free structural validation.
+
+    `grids` (from preprocessing) is only needed to resolve the mix tempo when
+    it defaults to an auto-detected track bpm. Without it, checks that need
+    the tempo to compare positions are skipped; callers that render (the
+    `play` CLI) re-run validation with grids after preprocessing.
+    """
+    mix_tempo = resolved_mix_tempo(plan, grids)
     issues: list[str] = []
     issues.extend(_check_track_references(plan))
     issues.extend(_check_deck_references(plan))
     issues.extend(_check_cue_references(plan))
     issues.extend(_check_stem_references(plan))
-    issues.extend(_check_keyframe_ordering(plan))
+    issues.extend(_check_keyframe_ordering(plan, mix_tempo))
     issues.extend(_check_vocal_handoff_requirements(plan))
+    issues.extend(_check_transitions(plan, mix_tempo))
+    issues.extend(_check_single_crossfader(plan))
     if issues:
         raise PlanValidationError(issues)
 
@@ -64,13 +75,22 @@ def validate_plan(plan: Plan) -> None:
 # ---------------------------------------------------------------------------
 
 
-def resolved_mix_tempo(plan: Plan) -> float:
-    """The plan's effective mix tempo. Defaults to the first track's bpm."""
+def resolved_mix_tempo(
+    plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None
+) -> float | None:
+    """The plan's effective mix tempo: `meta.mix_tempo`, else the first track's
+    bpm (declared, or detected via `grids`). None when it defaults to an
+    auto-detected bpm and no grids are given (i.e. before preprocessing)."""
     if plan.meta.mix_tempo is not None:
         return plan.meta.mix_tempo
-    if plan.tracks:
-        return next(iter(plan.tracks.values())).bpm
-    return 120.0
+    if not plan.tracks:
+        return 120.0
+    tid, track = next(iter(plan.tracks.items()))
+    if track.bpm is not None:
+        return track.bpm
+    if grids and tid in grids:
+        return grids[tid].bpm
+    return None
 
 
 def position_to_mix_beats(pos: Any, mix_tempo: float) -> float:
@@ -197,10 +217,11 @@ def _check_stem_references(plan: Plan) -> list[str]:
     return issues
 
 
-def _check_keyframe_ordering(plan: Plan) -> list[str]:
+def _check_keyframe_ordering(plan: Plan, mix_tempo: float | None) -> list[str]:
     issues: list[str] = []
-    mix_tempo = resolved_mix_tempo(plan)
     for i, lane in enumerate(plan.automation):
+        if mix_tempo is None and any(isinstance(kf.at, SecondPos) for kf in lane.keyframes):
+            continue  # ordering mixed units needs the tempo; re-checked after preprocess
         prev: float | None = None
         for j, kf in enumerate(lane.keyframes):
             if isinstance(kf.at, CuePos):
@@ -224,7 +245,9 @@ def _check_keyframe_ordering(plan: Plan) -> list[str]:
 
 
 def validate_against_audio(
-    plan: Plan, durations: dict[str, float]
+    plan: Plan,
+    durations: dict[str, float],
+    grids: dict[str, time_math.TrackGrid] | None = None,
 ) -> None:
     """
     Run audio-aware validation that requires preprocessing output:
@@ -232,17 +255,23 @@ def validate_against_audio(
       - rule 6: track positions in play segments fall within track duration
     `durations` maps track_id → audio duration in seconds (typically taken
     from the preprocessor's TrackAnalysis.primary.duration_sec).
+    `grids` maps track_id → resolved beat grid (PreprocessResult.grids()). It's
+    required for tracks whose bpm is auto-detected; with it, rule 6 honors the
+    anchor, and rule 5 uses each track's real tempo for time-stretched spans.
     """
     issues: list[str] = []
-    issues.extend(_check_track_position_bounds(plan, durations))
-    issues.extend(_check_no_deck_overlap(plan))
+    issues.extend(_check_track_position_bounds(plan, durations, grids))
+    issues.extend(_check_no_deck_overlap(plan, grids))
     if issues:
         raise PlanValidationError(issues)
 
 
 def _check_track_position_bounds(
-    plan: Plan, durations: dict[str, float]
+    plan: Plan,
+    durations: dict[str, float],
+    grids: dict[str, time_math.TrackGrid] | None = None,
 ) -> list[str]:
+    grids = grids or {}
     issues: list[str] = []
     for i, seg in enumerate(plan.timeline):
         if not isinstance(seg, PlaySegment):
@@ -251,18 +280,21 @@ def _check_track_position_bounds(
         if track is None or seg.track not in durations:
             continue
         dur_sec = durations[seg.track]
+        grid = grids.get(seg.track)
         try:
-            from_sec = track_pos_to_seconds(seg.from_, track)
-            to_sec = track_pos_to_seconds(seg.to, track)
+            from_sec = time_math.track_pos_to_seconds(seg.from_, track, grid)
+            to_sec = time_math.track_pos_to_seconds(seg.to, track, grid)
         except (ValueError, TypeError) as e:
             issues.append(f"timeline[{i}] (play): {e}")
             continue
-        if from_sec < 0 or from_sec > dur_sec:
+        # A grid anchor may sit up to ANCHOR_TOLERANCE before sample 0, so beat 0
+        # can resolve slightly negative; the engine pads that with silence.
+        if from_sec < -ANCHOR_TOLERANCE or from_sec > dur_sec:
             issues.append(
                 f"timeline[{i}] (play): track {seg.track!r} 'from' resolves to "
                 f"{from_sec:.3f}s but track is only {dur_sec:.3f}s long"
             )
-        if to_sec < 0 or to_sec > dur_sec:
+        if to_sec < -ANCHOR_TOLERANCE or to_sec > dur_sec:
             issues.append(
                 f"timeline[{i}] (play): track {seg.track!r} 'to' resolves to "
                 f"{to_sec:.3f}s but track is only {dur_sec:.3f}s long"
@@ -275,72 +307,41 @@ def _check_track_position_bounds(
     return issues
 
 
-def _check_no_deck_overlap(plan: Plan) -> list[str]:
+def _check_no_deck_overlap(
+    plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None
+) -> list[str]:
     """
-    Compute mix-time spans of every segment, group by deck, sort by start,
-    and flag any overlap. Transitions occupy both from_deck and to_deck.
+    Resolve play/silence segments to mix-time spans (compiler.timeline_spans),
+    group by deck, and flag any overlap. Transitions are not occupancies:
+    they're gain changes laid over decks that are already playing (a crossfade
+    needs both decks' play segments to span the window). Transition-vs-
+    transition overlap is checked separately in `_check_transitions`.
     """
+    from dj_segue.compiler import timeline_spans  # compiler imports schema.plan
+
+    mix_tempo = resolved_mix_tempo(plan, grids)
+    if mix_tempo is None:
+        return ["mix tempo is unknown: first track's bpm is auto-detected but no grids were given"]
+    try:
+        spans = timeline_spans(plan, mix_tempo, grids)
+    except (ValueError, TypeError, KeyError) as e:
+        return [f"timeline: {e}"]
+
     issues: list[str] = []
-    mix_tempo = resolved_mix_tempo(plan)
-
-    # (deck, mix_start, mix_end, label) per occupancy
-    occupancies: list[tuple[int, float, float, str]] = []
-    # Per-deck running cursor for "implicit start_at = end of previous"
-    deck_cursor: dict[int, float] = {}
-
-    for i, seg in enumerate(plan.timeline):
-        try:
-            spans = _segment_spans(seg, plan, mix_tempo, deck_cursor, i)
-        except (ValueError, TypeError) as e:
-            issues.append(f"timeline[{i}] ({seg.type}): {e}")
-            continue
-        for deck, start, end in spans:
-            occupancies.append((deck, start, end, f"timeline[{i}] ({seg.type})"))
-            deck_cursor[deck] = max(deck_cursor.get(deck, 0.0), end)
-
-    by_deck: dict[int, list[tuple[float, float, str]]] = {}
-    for deck, start, end, label in occupancies:
-        by_deck.setdefault(deck, []).append((start, end, label))
-
-    for deck, segs in by_deck.items():
-        segs.sort()
-        for (s1, e1, l1), (s2, e2, l2) in zip(segs, segs[1:]):
-            if s2 < e1 - 1e-6:  # tolerance for float compare
+    by_deck: dict[int, list] = {}
+    for sp in spans:
+        by_deck.setdefault(sp.deck, []).append(sp)
+    for deck, items in by_deck.items():
+        items.sort(key=lambda sp: sp.mix_start_sec)
+        for a, b in zip(items, items[1:]):
+            if b.mix_start_sec < a.mix_end_sec - 1e-6:  # tolerance for float compare
                 issues.append(
-                    f"deck {deck}: {l1} (mix-time {s1:.3f}–{e1:.3f}s) "
-                    f"overlaps {l2} (mix-time {s2:.3f}–{e2:.3f}s)"
+                    f"deck {deck}: timeline[{a.index}] ({a.kind}) (mix-time "
+                    f"{a.mix_start_sec:.3f}–{a.mix_end_sec:.3f}s) overlaps "
+                    f"timeline[{b.index}] ({b.kind}) (mix-time "
+                    f"{b.mix_start_sec:.3f}–{b.mix_end_sec:.3f}s)"
                 )
     return issues
-
-
-def _segment_spans(
-    seg, plan: Plan, mix_tempo: float, deck_cursor: dict[int, float], idx: int
-) -> list[tuple[int, float, float]]:
-    """Return [(deck, mix_start_sec, mix_end_sec), ...] for the segment."""
-    if isinstance(seg, PlaySegment):
-        track = plan.tracks.get(seg.track)
-        if track is None:
-            return []  # already reported by ref check
-        from_sec = track_pos_to_seconds(seg.from_, track)
-        to_sec = track_pos_to_seconds(seg.to, track)
-        duration = max(0.0, to_sec - from_sec)
-        if seg.start_at is not None:
-            start = mix_pos_to_seconds(seg.start_at, mix_tempo)
-        else:
-            start = deck_cursor.get(seg.deck, 0.0)
-        return [(seg.deck, start, start + duration)]
-    if isinstance(seg, SilenceSegment):
-        duration = duration_to_seconds(seg.duration, mix_tempo)
-        start = deck_cursor.get(seg.deck, 0.0)
-        return [(seg.deck, start, start + duration)]
-    if isinstance(seg, TransitionSegment):
-        start = mix_pos_to_seconds(seg.start_at, mix_tempo)
-        duration = duration_to_seconds(seg.duration, mix_tempo)
-        return [
-            (seg.from_deck, start, start + duration),
-            (seg.to_deck, start, start + duration),
-        ]
-    return []
 
 
 def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
@@ -372,3 +373,67 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
             f"available: {sorted(track.stems)}"
         )
     return issues
+
+
+def _check_transitions(plan: Plan, mix_tempo: float | None) -> list[str]:
+    """
+    Transition sanity (audio-free; all positions are mix-time):
+      - from_deck and to_deck differ;
+      - `cut` has zero duration (it's instantaneous — write {"beats": 0});
+        `crossfade` has positive duration;
+      - transitions touching the same deck don't overlap in time;
+      - per deck, transitions alternate out/in: a deck can't be faded out
+        twice without being faded back in (or vice versa).
+    """
+    issues: list[str] = []
+    # deck → [(start, end, direction, label)]; direction -1 = out, +1 = in
+    per_deck: dict[int, list[tuple[float, float, int, str]]] = {}
+    for i, seg in enumerate(plan.timeline):
+        if not isinstance(seg, TransitionSegment):
+            continue
+        label = f"timeline[{i}] ({seg.style})"
+        if seg.from_deck == seg.to_deck:
+            issues.append(f"{label}: from_deck and to_deck are both {seg.from_deck}")
+            continue
+        if mix_tempo is None:
+            continue  # timing checks need the tempo; re-checked after preprocess
+        try:
+            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo)
+            duration = time_math.duration_to_seconds(seg.duration, mix_tempo)
+        except (ValueError, TypeError):
+            continue  # cue-in-mix-time etc. already reported elsewhere
+        if seg.style == "cut" and duration != 0:
+            issues.append(
+                f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'
+            )
+        if seg.style != "cut" and duration <= 0:
+            issues.append(f"{label}: duration must be positive")
+        end = start + (0.0 if seg.style == "cut" else duration)
+        per_deck.setdefault(seg.from_deck, []).append((start, end, -1, label))
+        per_deck.setdefault(seg.to_deck, []).append((start, end, +1, label))
+
+    for deck, items in sorted(per_deck.items()):
+        items.sort()
+        for (s1, e1, d1, l1), (s2, e2, d2, l2) in zip(items, items[1:]):
+            if s2 < e1 - 1e-6:
+                issues.append(
+                    f"deck {deck}: {l1} (mix-time {s1:.3f}–{e1:.3f}s) overlaps "
+                    f"{l2} (mix-time {s2:.3f}–{e2:.3f}s)"
+                )
+            elif d1 == d2:
+                verb = "out" if d1 < 0 else "in"
+                issues.append(
+                    f"deck {deck}: faded {verb} by {l1} and again by {l2} "
+                    f"with no opposite transition in between"
+                )
+    return issues
+
+
+def _check_single_crossfader(plan: Plan) -> list[str]:
+    idxs = [i for i, l in enumerate(plan.automation) if isinstance(l, CrossfaderLane)]
+    if len(idxs) > 1:
+        return [
+            f"automation{idxs}: only one crossfader lane is allowed "
+            f"(there is one physical crossfader)"
+        ]
+    return []

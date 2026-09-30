@@ -115,7 +115,9 @@ class Track(BaseModel):
     model_config = _FORBID
 
     stems: dict[str, str]
-    bpm: float
+    # Omitted → detected by the preprocessor (v0.2+). A number overrides
+    # detection and is used exactly (the beat phase is still detected).
+    bpm: float | None = None
     key: str | None = None
     cues: dict[str, Cue] = Field(default_factory=dict)
 
@@ -137,8 +139,8 @@ class Track(BaseModel):
 
     @field_validator("bpm")
     @classmethod
-    def _bpm_positive(cls, v: float) -> float:
-        if v <= 0:
+    def _bpm_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
             raise ValueError(f"bpm must be positive, got {v}")
         return v
 
@@ -171,6 +173,9 @@ class PlaySegment(BaseModel):
     from_: Position = Field(alias="from")
     to: Position
     start_at: Position | None = None
+    # v0.2: time-stretch this segment so the track plays at this tempo (pitch
+    # preserved). Omitted → the track's natural tempo.
+    target_bpm: float | None = Field(default=None, gt=0)
 
 
 class SilenceSegment(BaseModel):
@@ -284,6 +289,23 @@ class Plan(BaseModel):
                 f"supported: {sorted(SUPPORTED_SCHEMA_VERSIONS)}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _gate_v02_features(self) -> "Plan":
+        if self.schema_version != "0.1":
+            return self
+        problems = [
+            f"tracks.{tid}: bpm is required in schema 0.1 (optional from 0.2)"
+            for tid, t in self.tracks.items()
+            if t.bpm is None
+        ] + [
+            f"timeline[{i}]: target_bpm requires schema_version 0.2"
+            for i, seg in enumerate(self.timeline)
+            if isinstance(seg, PlaySegment) and seg.target_bpm is not None
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
     @field_validator("decks", mode="before")
     @classmethod

@@ -149,3 +149,70 @@ def test_multiple_issues_collected(minimal_plan_data) -> None:
     with pytest.raises(PlanValidationError) as exc:
         validate_plan(plan)
     assert len(exc.value.issues) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Transitions (M2)
+# ---------------------------------------------------------------------------
+
+
+def _transition(style: str, beat: float, dur: float, frm: int = 1, to: int = 2) -> dict:
+    return {
+        "type": "transition", "style": style, "from_deck": frm, "to_deck": to,
+        "start_at": {"beat": beat}, "duration": {"beats": dur},
+    }
+
+
+def _issues(data: dict) -> list[str]:
+    with pytest.raises(PlanValidationError) as exc:
+        validate_plan(_build(data))
+    return exc.value.issues
+
+
+def test_crossfade_example_plan_validates(example_plan_path) -> None:
+    validate_plan(load_plan(example_plan_path.parent / "crossfade_mix.plan.jsonc"))
+
+
+def test_valid_crossfade_and_cut_pass(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"] += [
+        _transition("crossfade", 28, 4),
+        _transition("cut", 40, 0, frm=2, to=1),
+    ]
+    validate_plan(_build(minimal_plan_data))
+
+
+def test_cut_with_duration_is_rejected(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"].append(_transition("cut", 32, 4))
+    assert any("cut is instantaneous" in m for m in _issues(minimal_plan_data))
+
+
+def test_crossfade_with_zero_duration_is_rejected(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"].append(_transition("crossfade", 32, 0))
+    assert any("duration must be positive" in m for m in _issues(minimal_plan_data))
+
+
+def test_transition_to_same_deck_is_rejected(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"].append(_transition("crossfade", 32, 4, frm=1, to=1))
+    assert any("both 1" in m for m in _issues(minimal_plan_data))
+
+
+def test_overlapping_transitions_on_a_deck_are_rejected(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"] += [
+        _transition("crossfade", 28, 8),
+        _transition("crossfade", 32, 4, frm=2, to=1),
+    ]
+    assert any("deck 1" in m and "overlaps" in m for m in _issues(minimal_plan_data))
+
+
+def test_fading_a_deck_out_twice_is_rejected(minimal_plan_data) -> None:
+    minimal_plan_data["timeline"] += [
+        _transition("crossfade", 28, 4),
+        _transition("crossfade", 40, 4),
+    ]
+    assert any("faded out" in m for m in _issues(minimal_plan_data))
+
+
+def test_two_crossfader_lanes_are_rejected(minimal_plan_data) -> None:
+    lane = {"lane": "crossfader", "keyframes": [{"at": {"beat": 0}, "value": 0.0}]}
+    minimal_plan_data["automation"] += [lane, dict(lane)]
+    assert any("only one crossfader" in m for m in _issues(minimal_plan_data))

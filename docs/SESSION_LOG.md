@@ -166,3 +166,59 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - M1 acceptance test does not assert byte-identical WAVs (no golden file). It asserts on properties (duration, RMS in time windows, FFT bin energies). This is more robust to harmless float/PCM rounding differences across platforms but won't catch subtle phase or stereo-balance regressions. Worth adding a perceptual golden in M2 if the test catches drift.
 
 ---
+
+## Session: 2026-09-29 → 2026-09-30 (M2, M2.5, M2.6 — general mixing works)
+
+**Milestone:** M2 — Crossfades; M2.5 — Tempo matching (new); M2.6 — Grid robustness (new). All DONE.
+**Duration:** one long session (~40 turns)
+**Worked on:** Re-scoped the roadmap to general mixing first (M6 planner and M7 Mixxx deferred); crossfades, tempo detection and time-stretch beatmatching, downbeats. First real-music mix (two user MP3s) renders beat-locked and sounded good to the user.
+
+### Roadmap changes (decided with user 2026-09-29)
+- Pause M6 (wordplay planner) and M7 (Mixxx executor); get general mixing working first.
+- Added M2.5 (tempo matching) and M2.6 (grid robustness, after comparing with Mixxx's analyzer). See docs/milestones.md.
+- Unsupported lanes/segments **hard-fail** with NotImplementedError naming the milestone (resolves last session's open question).
+- Clipping: stretched/summed peaks exceed 0 dBFS (real mix peaks ~1.86). User chose a **master limiter in M5**; no interim gain cut.
+
+### Completed
+- Adopted the beat-grid anchor work (TrackGrid) found uncommitted at session start (origin unlogged), then reworked it (below).
+- **M2:** `compiler.py` (engine-agnostic): gain `Envelope`/`Ramp`s from deck_volume/crossfader lanes and crossfade/cut transitions; `timeline_spans` (single place computing segment mix-time + playback rate). `executor/native/curves.py` renders envelopes sample-accurately. Equal-power crossfades (sin/cos) and crossfader law; exponential interpolation = linear-in-dB with -60 dB floor. `inspect` shows transition expansion. `examples/crossfade_mix.plan.jsonc` (3 tracks, 2 crossfades).
+- **Validator fix:** M1 counted transitions as deck occupancy, so every real crossfade failed overlap validation. Transitions are now gain-only; new rules: cut needs duration 0, crossfade duration > 0, from≠to deck, no overlapping transitions per deck, per-deck out/in alternation, one crossfader lane max.
+- **M2.5:** tempo detection by fitting a fixed grid to onset energy (comb search → weighted least squares; onset-latency compensated). Accuracy on synthetic clicks: ±0.001 BPM, phase ±0.2 ms. librosa's estimate was off (Starships 126.05 vs true 125.00). `track.bpm` optional (auto-detect; a number overrides). `play.target_bpm` time-stretches via the `rubberband` CLI (R3/--fine; onsets within 0.25 ms). `dj-segue preprocess` prints per-track tempo/anchor. `examples/real_mix.plan.jsonc` (needs local audio/).
+- **M2.6:** kick-band (<200 Hz) decides beat vs off-beat (loud off-beat hats pulled grid half a beat); BPM rounding to whole/½/⅓/¼ when drift < 10 ms (after Mixxx); downbeats via beat_this (optional) — beat 0 = first downbeat. Verified: trimming 1–3 beats off either real track moves beat 0 correctly (8/8); beat_this agrees with our beat phase (0% half-beat off).
+- Real mix render (One More Time 122.88 + Starships 125.00 → 124, 8-bar crossfade): every 16-beat window within ±9 ms of the mix grid. User listened: sounds good.
+- Fixed two circular imports (one pre-existing: importing `time_math` first crashed). Validator now imports the `time_math` module, not names; shared constant in `constants.py`.
+- `/audio/` (repo root, git-ignored) for local music; README quick start updated.
+
+### Tests
+- 175 passed, 0 failed (~25 s; was 5 s — beat_this runs on each analyzed test track).
+- New: test_compiler, test_engine_m2, test_m2_acceptance, test_beat_grid (rewritten), test_m25_tempo, test_m26_grid; transition cases in test_validator / test_audio_validator.
+- Stretch tests skip without the `rubberband` CLI; the downbeat pipeline test skips without beat_this.
+- hello_mix render verified byte-identical to M1 through all changes.
+
+### Schema or interface changes
+- **Schema bumped to v0.2** (additive; 0.1 plans still valid): `track.bpm` optional, `play.target_bpm`. Plans declaring 0.1 must give `bpm` and can't use `target_bpm`. New doc `docs/schema-v0.2.md`; v0.1 doc kept (with a track-time clarification added this session).
+- **Semantics:** track beat N counts from the track's first downbeat on the fitted grid (not sample 0). `second` positions stay absolute.
+- Internal: `validate_plan(plan, grids=None)`, `resolved_mix_tempo(plan, grids)` may return None before preprocessing; `BeatAnalysis.beat_anchor(bpm)` / `grid_anchor(bpm)`; analysis cache schema v4; `PreprocessResult.grids()` raises `TempoNotDetectedError`.
+
+### Dependencies added/removed
+- System: `rubberband` CLI (brew install rubberband) — required for `target_bpm`.
+- Optional extra `downbeats`: `beat_this` (pulls in torch/torchaudio; model checkpoint auto-downloads once to ~/.cache/torch/hub).
+- pyrubberband was tried and **removed** (see notes).
+
+### Open questions
+- none blocking. Not built: a metronome/"click on the grid" render option would make checking grids by ear easy — worth considering.
+
+### Next session should
+- Start **M3 (stems)**: demucs separation in the preprocessor (torch already installed via beat_this), stem-aware track loading, `stem_volume` lane, `vocal_handoff` transition.
+- M5 must include the master limiter (decided this session).
+
+### Notes for future sessions
+- **Don't use pyrubberband.** It mutates the `rbargs` dict passed in (`setdefault('--tempo', rate)`), so a shared dict leaked the first segment's rate into every later stretch — a real mix came out at 126 BPM instead of 124. It also writes 16-bit temp files. We call the CLI directly with float temp files.
+- The `rubberband` CLI clamps output to ±1.0 even for float WAVs; `stretch.py` scales input to -6 dBFS and back.
+- Verify alignment by measuring, not by a single fit: `fit_grid` on a short slice can latch onto a wrong tempo; phase-tracking in 16-beat windows against the mix grid is the reliable check (it's what caught the pyrubberband bug).
+- beat_this misreads synthetic accent patterns (hears the accent as a pickup). Test our downbeat *logic* and *consistency* synthetically; judge correctness on real music.
+- Import cycle hazard: `time_math` → `schema.plan` → `schema/__init__` → validator. Anything the validator needs from time_math must be looked up via the module at call time; keep librosa out of schema imports (`inspect` must stay light).
+- Tracks mastered hot decode above 1.0 and stretching raises peaks 2–4 dB — expect clipping in PCM_16 renders until the M5 limiter.
+- User preference: detect values from audio by default; explicit plan values are overrides.
+
+---

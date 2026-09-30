@@ -81,7 +81,7 @@ The preprocessor populates caches if missing; the player verifies they exist and
 
 Two executor implementations target the same plan format:
 
-- **Native** (default): a Python-side audio engine using `sounddevice`, `pyrubberband`, `pedalboard`. Sample-accurate, supports headless WAV output for testing. Owns the v0.1 milestone.
+- **Native** (default): a Python-side audio engine using `sounddevice`, Rubber Band, `pedalboard`. Sample-accurate, supports headless WAV output for testing. Owns the v0.1 milestone.
 - **Mixxx** (fallback): the existing MIDI-bridge executor, kept for cross-validation. Loses precision for sub-beat operations but useful as a sanity check.
 
 Plans are engine-agnostic. The executor abstract base class lives in `src/dj_segue/executor/base.py` and pins the interface.
@@ -167,7 +167,7 @@ Pinned in `pyproject.toml`. Approximate set:
 | Audio I/O            | `sounddevice`              |
 | File decode          | `soundfile`                |
 | Analysis             | `librosa` (M1), maybe `essentia` later |
-| Time-stretch         | `pyrubberband` (wraps `rubberband-cli`) |
+| Time-stretch         | `rubberband` CLI (system install; called directly, not via pyrubberband) |
 | Effects (EQ/filter)  | `pedalboard` (Spotify) and/or `scipy.signal` |
 | Stem separation      | `demucs` (optional, behind a flag) |
 | Schema validation    | `pydantic` v2             |

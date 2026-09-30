@@ -84,3 +84,20 @@ def test_to_must_be_after_from(minimal_plan_data) -> None:
     with pytest.raises(PlanValidationError) as exc:
         validate_against_audio(plan, {"a": 16.0, "b": 16.0})
     assert any("must be after" in m for m in exc.value.issues)
+
+
+def test_crossfade_over_playing_decks_is_not_overlap(minimal_plan_data) -> None:
+    # Regression: M1 counted transitions as deck occupancy, so a crossfade
+    # between two playing decks was flagged as overlapping both play segments.
+    minimal_plan_data["timeline"][1]["start_at"] = {"beat": 24}
+    minimal_plan_data["timeline"].append(
+        {
+            "type": "transition",
+            "style": "crossfade",
+            "from_deck": 1,
+            "to_deck": 2,
+            "start_at": {"beat": 24},
+            "duration": {"beats": 8},
+        }
+    )
+    validate_against_audio(_build(minimal_plan_data), {"a": 16.0, "b": 16.0})
