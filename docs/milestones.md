@@ -69,6 +69,20 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ---
 
+## M4 — Loops  (DONE 2026-09-30, ahead of M3)
+
+**Goal:** Tightening loops and other rhythmic effects. (Pulled ahead of M3 on 2026-09-30: loops don't need stems.)
+
+**Scope in:**
+- `loop` segment (schema v0.3) with a `schedule` of (length, repetitions) steps. Decided 2026-09-30 over a `loop_length` automation lane: a lane would make segment timing depend on automation.
+- Sample-accurate loop boundaries; click-free seams (3 ms crossfade ending on each boundary).
+- Segment `id` + `{"after": id, "offset"}` mix positions, and `target_bpm: "mix"` (schema v0.3; ideas taken from an earlier trigger-based prototype).
+- `dj-segue scrub`: a local web page to find plan positions by ear — live beat/bar numbers, a song map (energy/bass per bar, section starts, breaks from `analyzer/structure.py`), seek by beat/bar/section, loops, click, marks.
+
+**Acceptance test:** A track with a 4→2→1→0.5 beat tightening loop, beat-locked to the master clock (`tests/test_m4_loops.py`: every rep starts on its exact sample; stretched loops stay within 4 ms of the mix grid). Real-music demo: `examples/starships_omt.plan.jsonc`.
+
+---
+
 ## M3 — Stems
 
 **Goal:** Vocal-aware transitions.
@@ -80,19 +94,6 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - Stem separation in the preprocessor (demucs).
 
 **Acceptance test:** A wordplay-style transition where one track's vocals end on a word and the other track's vocals start on the same word, with drums continuing under the transition.
-
----
-
-## M4 — Loops
-
-**Goal:** Tightening loops and other rhythmic effects.
-
-**Scope in:**
-- `loop` segment type with `length_beats` and `repetitions` parameters.
-- Length-as-automation for tightening loops.
-- Sample-accurate loop boundaries.
-
-**Acceptance test:** A track with a 4→2→1→0.5 beat tightening loop, beat-locked to the master clock.
 
 ---
 

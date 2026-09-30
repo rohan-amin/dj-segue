@@ -1,0 +1,59 @@
+// examples/starships_omt.plan.jsonc
+//
+// M4 demo: a tightening loop on Starships hands off to One More Time. Ported
+// from a plan written for an earlier trigger-based prototype; needs your own
+// copies of the tracks in the git-ignored audio/ folder (see README).
+//
+//   - Mix-beat 0–8:    Starships beats 100–108.
+//   - Mix-beat 8–28:   Starships loops from beat 108: 4 beats ×3, then 2 beats ×4.
+//   - Mix-beat 20–28:  One More Time comes in at its beat 184 (stretched to the
+//                      mix tempo) under an 8-beat crossfade, as the loop ends.
+//   - Mix-beat 28–76:  One More Time alone (to its beat 240).
+//
+// The beat numbers came from the old prototype, whose grid may differ from
+// ours; check them with `dj-segue scrub <file>` and adjust.
+
+{
+  "schema_version": "0.3",
+
+  "meta": {
+    "mix_name": "Starships into One More Time (tightening loop)",
+    "source_prompt": "loop Starships, tighten the loop, crossfade into One More Time",
+    "mix_tempo": 125
+  },
+
+  "tracks": {
+    "starships": { "path": "audio/DJ's International - Starships (Original Mix).mp3" },
+    "omt":       { "path": "audio/01 - One More Time.mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "starships" },
+    "2": { "label": "omt" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "starships",
+      "from": { "beat": 100 }, "to": { "beat": 108 },
+      "start_at": { "beat": 0 }, "target_bpm": "mix" },
+
+    { "type": "loop", "id": "a_loop", "deck": 1, "track": "starships",
+      "from": { "beat": 108 }, "target_bpm": "mix",
+      "schedule": [
+        { "length": { "beats": 4 }, "repetitions": 3 },
+        { "length": { "beats": 2 }, "repetitions": 4 }
+      ] },
+
+    // B enters 8 beats before the loop ends; the fade covers those 8 beats.
+    { "type": "play", "deck": 2, "track": "omt",
+      "from": { "beat": 184 }, "to": { "beat": 240 },
+      "start_at": { "after": "a_loop", "offset": { "beats": -8 } },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade", "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "a_loop", "offset": { "beats": -8 } },
+      "duration": { "beats": 8 } }
+  ],
+
+  "automation": []
+}

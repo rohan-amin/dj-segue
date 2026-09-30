@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from io import StringIO
 
-from dj_segue.compiler import transition_envelopes
+from dj_segue.compiler import resolve_timeline, transition_envelopes
 from dj_segue.schema.plan import (
+    AfterPos,
     BarPos,
     BeatPos,
     CrossfaderLane,
@@ -13,6 +14,7 @@ from dj_segue.schema.plan import (
     DbKeyframe,
     DeckVolumeLane,
     EqLane,
+    LoopSegment,
     PlaySegment,
     Plan,
     SecondPos,
@@ -31,16 +33,27 @@ from dj_segue.schema.validator import (
 def format_plan(plan: Plan, *, run_validation: bool = True) -> str:
     out = StringIO()
     mix_tempo = resolved_mix_tempo(plan)
+    anchors = _anchors(plan, mix_tempo)
 
     _write_header(out, plan, mix_tempo)
     _write_tracks(out, plan)
     _write_decks(out, plan)
-    _write_timeline(out, plan, mix_tempo)
-    _write_transition_expansion(out, plan, mix_tempo)
-    _write_automation(out, plan, mix_tempo)
+    _write_timeline(out, plan, mix_tempo, anchors)
+    _write_transition_expansion(out, plan, mix_tempo, anchors)
+    _write_automation(out, plan, mix_tempo, anchors)
     if run_validation:
         _write_validation(out, plan)
     return out.getvalue()
+
+
+def _anchors(plan: Plan, mix_tempo: float | None) -> dict[str, float] | None:
+    """Segment end times for `after` positions; None if timing needs preprocessing."""
+    if mix_tempo is None:
+        return None
+    try:
+        return resolve_timeline(plan, mix_tempo).anchors
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -93,41 +106,68 @@ def _write_decks(out: StringIO, plan: Plan) -> None:
     out.write("\n")
 
 
-def _write_timeline(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
+def _write_timeline(
+    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+) -> None:
     out.write(f"-- timeline ({len(plan.timeline)} segments) --\n")
     for i, seg in enumerate(plan.timeline):
+        sid = f"  id={seg.id}" if seg.id is not None else ""
         if isinstance(seg, PlaySegment):
-            start = _fmt_mix_position(seg.start_at, mix_tempo, default="(after prev on deck)")
+            start = _fmt_mix_position(
+                seg.start_at, mix_tempo, anchors, default="(after prev on deck)"
+            )
             from_ = _fmt_track_position(seg.from_)
             to = _fmt_track_position(seg.to)
-            tempo = f"  @ {seg.target_bpm:g} bpm" if seg.target_bpm is not None else ""
             out.write(
                 f"  [{i}] play     deck {seg.deck}  track={seg.track}  "
-                f"track[{from_} → {to}]  start_at={start}{tempo}\n"
+                f"track[{from_} → {to}]  start_at={start}{_fmt_tempo(seg)}{sid}\n"
+            )
+        elif isinstance(seg, LoopSegment):
+            start = _fmt_mix_position(
+                seg.start_at, mix_tempo, anchors, default="(after prev on deck)"
+            )
+            steps = ", ".join(
+                f"{_fmt_duration(st.length)} ×{st.repetitions}" for st in seg.schedule
+            )
+            out.write(
+                f"  [{i}] loop     deck {seg.deck}  track={seg.track}  "
+                f"from {_fmt_track_position(seg.from_)}  [{steps}]  "
+                f"start_at={start}{_fmt_tempo(seg)}{sid}\n"
             )
         elif isinstance(seg, SilenceSegment):
             dur = _fmt_duration(seg.duration)
-            out.write(f"  [{i}] silence  deck {seg.deck}  duration={dur}\n")
+            out.write(f"  [{i}] silence  deck {seg.deck}  duration={dur}{sid}\n")
         elif isinstance(seg, TransitionSegment):
-            start = _fmt_mix_position(seg.start_at, mix_tempo)
+            start = _fmt_mix_position(seg.start_at, mix_tempo, anchors)
             dur = _fmt_duration(seg.duration)
             out.write(
                 f"  [{i}] transit  {seg.style:<14} "
                 f"deck {seg.from_deck} → deck {seg.to_deck}  "
-                f"start_at={start}  duration={dur}\n"
+                f"start_at={start}  duration={dur}{sid}\n"
             )
     out.write("\n")
 
 
-def _write_transition_expansion(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
+def _write_transition_expansion(
+    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+) -> None:
     """Show the per-deck gain ramps that crossfade/cut transitions compile to."""
     if not any(isinstance(s, TransitionSegment) for s in plan.timeline):
         return
     if mix_tempo is None:
         out.write("-- transition expansion --\n  (after preprocess: mix tempo is auto)\n\n")
         return
+    uses_after = any(
+        isinstance(getattr(seg, "start_at", None), AfterPos) for seg in plan.timeline
+    )
+    if anchors is None and uses_after:
+        out.write(
+            "-- transition expansion --\n  (after preprocess: `after` positions "
+            "depend on auto-detected track tempos)\n\n"
+        )
+        return
     try:
-        envs = transition_envelopes(plan, mix_tempo)
+        envs = transition_envelopes(plan, mix_tempo, anchors)
     except (ValueError, TypeError) as e:  # e.g. cue ref in start_at
         out.write(f"-- transition expansion --\n  (cannot expand: {e})\n\n")
         return
@@ -149,7 +189,9 @@ def _write_transition_expansion(out: StringIO, plan: Plan, mix_tempo: float | No
     out.write("\n")
 
 
-def _write_automation(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
+def _write_automation(
+    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+) -> None:
     out.write(f"-- automation ({len(plan.automation)} lanes) --\n")
     if not plan.automation:
         out.write("  (none)\n\n")
@@ -170,7 +212,7 @@ def _write_automation(out: StringIO, plan: Plan, mix_tempo: float | None) -> Non
             f"{len(lane.keyframes)} kfs)\n"
         )
         for j, kf in enumerate(lane.keyframes):
-            at = _fmt_mix_position(kf.at, mix_tempo)
+            at = _fmt_mix_position(kf.at, mix_tempo, anchors)
             val = (
                 f"{kf.value_db:+g} dB"
                 if isinstance(kf, DbKeyframe)
@@ -208,14 +250,33 @@ def _fmt_track_position(pos) -> str:
     return repr(pos)
 
 
-def _fmt_mix_position(pos, mix_tempo: float | None, default: str = "?") -> str:
+def _fmt_tempo(seg) -> str:
+    if seg.target_bpm is None:
+        return ""
+    if seg.target_bpm == "mix":
+        return "  @ mix bpm"
+    return f"  @ {seg.target_bpm:g} bpm"
+
+
+def _fmt_mix_position(
+    pos,
+    mix_tempo: float | None,
+    anchors: dict[str, float] | None = None,
+    default: str = "?",
+) -> str:
     if pos is None:
         return default
-    raw = _fmt_track_position(pos)
+    if isinstance(pos, AfterPos):
+        raw = f"after {pos.after}"
+        if pos.offset is not None:
+            off = _fmt_duration(pos.offset)
+            raw += f" {off}" if off.startswith("-") else f" +{off}"
+    else:
+        raw = _fmt_track_position(pos)
     if isinstance(pos, CuePos):
         return f"{raw} (invalid in mix-time)"
     try:
-        beats = position_to_mix_beats(pos, mix_tempo)
+        beats = position_to_mix_beats(pos, mix_tempo, anchors)
     except (ValueError, TypeError):
         return raw
     if isinstance(pos, BeatPos):

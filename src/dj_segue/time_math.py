@@ -13,6 +13,7 @@ from typing import Any
 from dj_segue.constants import ANCHOR_TOLERANCE  # noqa: F401  (re-exported)
 
 from dj_segue.schema.plan import (
+    AfterPos,
     BarPos,
     BarsDur,
     BeatPos,
@@ -62,8 +63,22 @@ class TrackGrid:
         return self.beat_to_seconds(bar * BEATS_PER_BAR)
 
 
-def mix_pos_to_seconds(pos: Any, mix_tempo: float) -> float:
-    """Resolve a mix-time position to seconds. Cue refs are invalid here."""
+def mix_pos_to_seconds(
+    pos: Any, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> float:
+    """Resolve a mix-time position to seconds. Cue refs are invalid here.
+
+    `anchors` maps segment id → the segment's mix end time in seconds
+    (compiler.resolve_timeline builds it); `{"after": id}` positions need it.
+    """
+    if isinstance(pos, AfterPos):
+        if anchors is None or pos.after not in anchors:
+            raise ValueError(
+                f"position after {pos.after!r} is unresolved: no earlier segment "
+                f"with that id (or the timeline isn't resolved yet)"
+            )
+        offset = 0.0 if pos.offset is None else duration_to_seconds(pos.offset, mix_tempo)
+        return anchors[pos.after] + offset
     if isinstance(pos, BeatPos):
         return pos.beat * 60.0 / mix_tempo
     if isinstance(pos, BarPos):

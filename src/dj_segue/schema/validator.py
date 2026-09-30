@@ -1,6 +1,6 @@
 """Cross-field validation that pydantic alone can't express.
 
-Rules implemented here come from `docs/schema-v0.1.md`, "Validation rules".
+Rules implemented here come from `docs/schema-v0.3.md`, "Validation rules".
 Two rules need audio metadata and are deferred to the preprocessor/executor:
   - rule 6: track positions fall within actual track duration
   - segment-overlap precision: requires resolving track-time spans to mix-time,
@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from dj_segue.schema.plan import (
+    AfterPos,
     AutomationLane,
     BarPos,
     BeatPos,
@@ -24,6 +25,7 @@ from dj_segue.schema.plan import (
     EqLane,
     FloatKeyframe,
     DbKeyframe,
+    LoopSegment,
     PlaySegment,
     Plan,
     SecondPos,
@@ -61,13 +63,32 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
     issues.extend(_check_track_references(plan))
     issues.extend(_check_deck_references(plan))
     issues.extend(_check_cue_references(plan))
+    issues.extend(_check_segment_ids(plan))
+    issues.extend(_check_loop_schedules(plan))
     issues.extend(_check_stem_references(plan))
-    issues.extend(_check_keyframe_ordering(plan, mix_tempo))
+    anchors = _try_anchors(plan, mix_tempo, grids)
+    issues.extend(_check_keyframe_ordering(plan, mix_tempo, anchors))
     issues.extend(_check_vocal_handoff_requirements(plan))
-    issues.extend(_check_transitions(plan, mix_tempo))
+    issues.extend(_check_transitions(plan, mix_tempo, anchors))
     issues.extend(_check_single_crossfader(plan))
     if issues:
         raise PlanValidationError(issues)
+
+
+def _try_anchors(
+    plan: Plan, mix_tempo: float | None, grids: dict[str, time_math.TrackGrid] | None
+) -> dict[str, float] | None:
+    """Segment-id → mix end seconds, or None when timing can't be resolved yet
+    (auto tempo before preprocessing). Checks that need an unresolvable
+    `after` position are skipped and re-run once grids are available."""
+    if mix_tempo is None:
+        return None
+    from dj_segue.compiler import resolve_timeline  # compiler imports schema.plan
+
+    try:
+        return resolve_timeline(plan, mix_tempo, grids).anchors
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +114,13 @@ def resolved_mix_tempo(
     return None
 
 
-def position_to_mix_beats(pos: Any, mix_tempo: float) -> float:
-    """Convert a mix-time position to mix-beats. Assumes 4/4 for bars."""
+def position_to_mix_beats(
+    pos: Any, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> float:
+    """Convert a mix-time position to mix-beats. Assumes 4/4 for bars.
+    `after` positions need `anchors` (and the tempo)."""
+    if isinstance(pos, AfterPos):
+        return time_math.mix_pos_to_seconds(pos, mix_tempo, anchors) * mix_tempo / 60.0
     if isinstance(pos, BeatPos):
         return pos.beat
     if isinstance(pos, BarPos):
@@ -115,9 +141,9 @@ def _check_track_references(plan: Plan) -> list[str]:
     issues: list[str] = []
     declared = set(plan.tracks)
     for i, seg in enumerate(plan.timeline):
-        if isinstance(seg, PlaySegment) and seg.track not in declared:
+        if isinstance(seg, (PlaySegment, LoopSegment)) and seg.track not in declared:
             issues.append(
-                f"timeline[{i}] (play): unknown track {seg.track!r}; "
+                f"timeline[{i}] ({seg.type}): unknown track {seg.track!r}; "
                 f"declared tracks: {sorted(declared)}"
             )
     return issues
@@ -128,7 +154,7 @@ def _check_deck_references(plan: Plan) -> list[str]:
     declared = set(plan.decks)
     for i, seg in enumerate(plan.timeline):
         decks_used: list[int] = []
-        if isinstance(seg, (PlaySegment, SilenceSegment)):
+        if isinstance(seg, (PlaySegment, LoopSegment, SilenceSegment)):
             decks_used.append(seg.deck)
         elif isinstance(seg, TransitionSegment):
             decks_used.extend([seg.from_deck, seg.to_deck])
@@ -157,22 +183,25 @@ def _check_cue_references(plan: Plan) -> list[str]:
     """
     issues: list[str] = []
     for i, seg in enumerate(plan.timeline):
-        if isinstance(seg, PlaySegment):
+        if isinstance(seg, (PlaySegment, LoopSegment)):
             track = plan.tracks.get(seg.track)
-            for field, pos in (("from", seg.from_), ("to", seg.to)):
+            fields = [("from", seg.from_)]
+            if isinstance(seg, PlaySegment):
+                fields.append(("to", seg.to))
+            for field, pos in fields:
                 if isinstance(pos, CuePos):
                     if track is None:
                         # Track-ref error already reported elsewhere; skip here.
                         continue
                     if pos.cue not in track.cues:
                         issues.append(
-                            f"timeline[{i}] (play): cue {pos.cue!r} "
+                            f"timeline[{i}] ({seg.type}): cue {pos.cue!r} "
                             f"in '{field}' not declared on track {seg.track!r}; "
                             f"available cues: {sorted(track.cues)}"
                         )
             if isinstance(seg.start_at, CuePos):
                 issues.append(
-                    f"timeline[{i}] (play): cue references not allowed in "
+                    f"timeline[{i}] ({seg.type}): cue references not allowed in "
                     f"mix-time 'start_at'; got {seg.start_at.cue!r}"
                 )
         elif isinstance(seg, TransitionSegment):
@@ -191,6 +220,58 @@ def _check_cue_references(plan: Plan) -> list[str]:
     return issues
 
 
+def _check_segment_ids(plan: Plan) -> list[str]:
+    """
+    Segment ids are unique. An `after` position names a segment id; in the
+    timeline it must be an *earlier* segment (timing resolves in one pass,
+    so no cycles), in automation any segment.
+    """
+    issues: list[str] = []
+    seen: dict[str, int] = {}
+    for i, seg in enumerate(plan.timeline):
+        start_at = getattr(seg, "start_at", None)
+        if isinstance(start_at, AfterPos) and start_at.after not in seen:
+            later = any(s.id == start_at.after for s in plan.timeline[i:])
+            issues.append(
+                f"timeline[{i}] ({seg.type}): start_at after {start_at.after!r}: "
+                + (
+                    "must name an earlier segment"
+                    if later
+                    else f"no segment has that id; ids: {sorted(seen)}"
+                )
+            )
+        if seg.id is not None:
+            if seg.id in seen:
+                issues.append(
+                    f"timeline[{i}] ({seg.type}): id {seg.id!r} already used by "
+                    f"timeline[{seen[seg.id]}]"
+                )
+            else:
+                seen[seg.id] = i
+    for i, lane in enumerate(plan.automation):
+        for j, kf in enumerate(lane.keyframes):
+            if isinstance(kf.at, AfterPos) and kf.at.after not in seen:
+                issues.append(
+                    f"automation[{i}].keyframes[{j}]: after {kf.at.after!r}: "
+                    f"no segment has that id; ids: {sorted(seen)}"
+                )
+    return issues
+
+
+def _check_loop_schedules(plan: Plan) -> list[str]:
+    issues: list[str] = []
+    for i, seg in enumerate(plan.timeline):
+        if not isinstance(seg, LoopSegment):
+            continue
+        for j, step in enumerate(seg.schedule):
+            value = next(iter(step.length.model_dump().values()))
+            if value <= 0:
+                issues.append(
+                    f"timeline[{i}] (loop): schedule[{j}] length must be positive"
+                )
+    return issues
+
+
 def _check_stem_references(plan: Plan) -> list[str]:
     """
     For each stem_volume lane on deck D, every track that plays on D anywhere
@@ -199,7 +280,7 @@ def _check_stem_references(plan: Plan) -> list[str]:
     issues: list[str] = []
     tracks_per_deck: dict[int, set[str]] = {}
     for seg in plan.timeline:
-        if isinstance(seg, PlaySegment):
+        if isinstance(seg, (PlaySegment, LoopSegment)):
             tracks_per_deck.setdefault(seg.deck, set()).add(seg.track)
 
     for i, lane in enumerate(plan.automation):
@@ -217,18 +298,26 @@ def _check_stem_references(plan: Plan) -> list[str]:
     return issues
 
 
-def _check_keyframe_ordering(plan: Plan, mix_tempo: float | None) -> list[str]:
+def _check_keyframe_ordering(
+    plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None = None
+) -> list[str]:
     issues: list[str] = []
     for i, lane in enumerate(plan.automation):
-        if mix_tempo is None and any(isinstance(kf.at, SecondPos) for kf in lane.keyframes):
+        if mix_tempo is None and any(
+            isinstance(kf.at, (SecondPos, AfterPos)) for kf in lane.keyframes
+        ):
             continue  # ordering mixed units needs the tempo; re-checked after preprocess
+        if anchors is None and any(isinstance(kf.at, AfterPos) for kf in lane.keyframes):
+            continue  # `after` needs the resolved timeline; re-checked after preprocess
         prev: float | None = None
         for j, kf in enumerate(lane.keyframes):
             if isinstance(kf.at, CuePos):
                 # Already reported by _check_cue_references; skip ordering here.
                 continue
+            if isinstance(kf.at, AfterPos) and kf.at.after not in anchors:  # type: ignore[operator]
+                continue  # unknown id: reported by _check_segment_ids
             try:
-                cur = position_to_mix_beats(kf.at, mix_tempo)
+                cur = position_to_mix_beats(kf.at, mix_tempo, anchors)
             except (ValueError, TypeError) as e:
                 issues.append(
                     f"automation[{i}].keyframes[{j}]: {e}"
@@ -274,7 +363,7 @@ def _check_track_position_bounds(
     grids = grids or {}
     issues: list[str] = []
     for i, seg in enumerate(plan.timeline):
-        if not isinstance(seg, PlaySegment):
+        if not isinstance(seg, (PlaySegment, LoopSegment)):
             continue
         track = plan.tracks.get(seg.track)
         if track is None or seg.track not in durations:
@@ -283,9 +372,12 @@ def _check_track_position_bounds(
         grid = grids.get(seg.track)
         try:
             from_sec = time_math.track_pos_to_seconds(seg.from_, track, grid)
+            if isinstance(seg, LoopSegment):
+                issues.extend(_check_loop_bounds(i, seg, track, grid, from_sec, dur_sec))
+                continue
             to_sec = time_math.track_pos_to_seconds(seg.to, track, grid)
         except (ValueError, TypeError) as e:
-            issues.append(f"timeline[{i}] (play): {e}")
+            issues.append(f"timeline[{i}] ({seg.type}): {e}")
             continue
         # A grid anchor may sit up to ANCHOR_TOLERANCE before sample 0, so beat 0
         # can resolve slightly negative; the engine pads that with silence.
@@ -307,11 +399,24 @@ def _check_track_position_bounds(
     return issues
 
 
+def _check_loop_bounds(i, seg, track, grid, from_sec: float, dur_sec: float) -> list[str]:
+    from dj_segue.compiler import _track_duration_sec
+
+    longest = max(_track_duration_sec(st.length, track, grid) for st in seg.schedule)
+    end_sec = from_sec + longest
+    if from_sec < -ANCHOR_TOLERANCE or end_sec > dur_sec:
+        return [
+            f"timeline[{i}] (loop): track {seg.track!r} loop covers "
+            f"{from_sec:.3f}–{end_sec:.3f}s but track is only {dur_sec:.3f}s long"
+        ]
+    return []
+
+
 def _check_no_deck_overlap(
     plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None
 ) -> list[str]:
     """
-    Resolve play/silence segments to mix-time spans (compiler.timeline_spans),
+    Resolve play/loop/silence segments to mix-time spans (compiler.timeline_spans),
     group by deck, and flag any overlap. Transitions are not occupancies:
     they're gain changes laid over decks that are already playing (a crossfade
     needs both decks' play segments to span the window). Transition-vs-
@@ -360,7 +465,7 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
     if not decks_needing_vocals:
         return issues
     for i, seg in enumerate(plan.timeline):
-        if not isinstance(seg, PlaySegment):
+        if not isinstance(seg, (PlaySegment, LoopSegment)):
             continue
         if seg.deck not in decks_needing_vocals:
             continue
@@ -368,14 +473,16 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
         if track is None or "vocals" in track.stems:
             continue
         issues.append(
-            f"timeline[{i}] (play on deck {seg.deck}): track {seg.track!r} "
+            f"timeline[{i}] ({seg.type} on deck {seg.deck}): track {seg.track!r} "
             f"is needed for a vocal_handoff but has no 'vocals' stem; "
             f"available: {sorted(track.stems)}"
         )
     return issues
 
 
-def _check_transitions(plan: Plan, mix_tempo: float | None) -> list[str]:
+def _check_transitions(
+    plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None = None
+) -> list[str]:
     """
     Transition sanity (audio-free; all positions are mix-time):
       - from_deck and to_deck differ;
@@ -398,10 +505,12 @@ def _check_transitions(plan: Plan, mix_tempo: float | None) -> list[str]:
         if mix_tempo is None:
             continue  # timing checks need the tempo; re-checked after preprocess
         try:
-            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo)
+            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
             duration = time_math.duration_to_seconds(seg.duration, mix_tempo)
         except (ValueError, TypeError):
-            continue  # cue-in-mix-time etc. already reported elsewhere
+            # cue-in-mix-time is reported elsewhere; an `after` that can't be
+            # resolved yet is re-checked once grids are available.
+            continue
         if seg.style == "cut" and duration != 0:
             issues.append(
                 f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'

@@ -222,3 +222,51 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - User preference: detect values from audio by default; explicit plan values are overrides.
 
 ---
+
+## Session: 2026-09-30 (M4 loops, schema v0.3, web scrub)
+
+**Milestone:** M4 — Loops (pulled ahead of M3). Built and verified on real music.
+**Duration:** approximately 45 turns
+**Worked on:** Tightening loops; schema v0.3; ported a mix from the user's old DJ-as-code prototype; a browser-based beat finder with a song-structure map.
+
+### Roadmap changes (decided with user 2026-09-30)
+- M4 (loops) done before M3 (stems): loops don't need stems.
+- Loops use a per-segment `schedule`, not a `loop_length` automation lane (a lane would make segment timing depend on automation).
+- Direction: make plans easy for non-DJs — eventually "describe the mix in English, get accurate JSON". Hand-editable schema stays the source of truth. The user wants no full GUI for now — just what makes it easy to listen and find beats (→ web scrub).
+
+### Completed
+- **Schema v0.3** (additive): `loop` segment with `schedule` [(length, repetitions)…]; optional segment `id`; `{"after": id, "offset"?}` mix positions (resolve at compile time to that segment's end; timeline refs must be earlier segments); `target_bpm: "mix"`; `equal_power` lane interpolation. Old 0.1/0.2 plans valid; 0.3 features rejected in them. Doc: `docs/schema-v0.3.md`.
+- **Compiler:** `resolve_timeline` → `Timeline(spans, anchors)`; loop spans carry per-rep `LoopRep`s (each rep's start computed, not accumulated). Anchors threaded into transitions and automation lanes.
+- **Engine:** loops render sample-accurately; stretched once per loop region (shorter reps use a prefix); 3 ms linear seam crossfade that *ends* on each boundary, fed from a pre-roll before the loop start (the loop's first transient is untouched).
+- **Validator:** ids unique, `after` refs, loop lengths positive, loop region within track, loops in overlap/stem/vocal checks. Inspector shows loops, ids, `after`, `@ mix bpm`.
+- **Mixes** (from the old prototype's plan; ideas taken: named segments/after, bpm-match-as-default): `examples/starships_omt.plan.jsonc` (equal-power 8-beat crossfade) and `examples/starships_omt_slowin.plan.jsonc` (OMT fades in over 10 beats vs Starships out over 8 — user: "perfect"). Final positions picked by ear: Starships 100→loop at 108 (4×3, 2×4); OMT enters at its beat 184.
+- **`analyzer/structure.py`:** per-bar energy/bass (dB), breaks (1–4 bar bass dropouts ≥ 6 dB below both neighbours), section boundaries (Foote novelty on 4-bar lines, ≥ 8-bar sections, + bass steps ≥ 6 dB, + break ends). No section *names* — rule-based intro/build/drop labels were unreliable on the real tracks.
+- **`dj-segue scrub <file>`** is now a local web page (stdlib HTTP server on 127.0.0.1 + `scrub/page.html`, vanilla JS, Web Audio): whole-song map (waveform, energy/bass strips, boundaries, breaks), 8-bar zoom with numbered beats, big beat/bar readout with section/break context, buttons + keys for beat/bar/8-bar/section seeks, go-to-beat, native seamless loops ½–16 beats, click track (second synced buffer), marks (copy as `{ "beat": N }`, also printed in terminal). Paused seeks move silently (user rejected a one-beat preview). The terminal scrub was retired.
+
+### Tests
+- 204 passed, 0 failed (~24 s).
+- New: `tests/test_m4_loops.py` (schema gating, validation, loop timing, M4 acceptance via a "timecode" track — every rep sample-exact — seam click check, stretched loop on the mix grid, equal_power lanes); `tests/test_scrub.py` (breaks, structure on synthetic audio, server routes/marks).
+- The page's JS isn't unit-tested; it was checked in Chrome (muted) — play, seek, loop, marks, readout — and with `node --check`.
+- `real_mix` render verified byte-identical to last session's.
+
+### Schema or interface changes
+- **Schema bumped to v0.3** (additive), see above.
+- Internal: `mix_pos_to_seconds(pos, tempo, anchors=None)`; `resolve_timeline`; `segment_rate(seg, grid, mix_tempo)`; `transition_envelopes` / `deck_volume_envelopes` / `crossfader_envelope` take `anchors`; `Span.kind` includes `"loop"` with `reps`; `position_to_mix_beats(pos, tempo, anchors)`.
+
+### Dependencies added/removed
+- none (web scrub uses the stdlib server; the page has no external libraries).
+
+### Open questions
+- Transition curve: the `transition` segment has no curve option; custom shapes need `deck_volume` lanes (now incl. `equal_power`). Add `"curve"` to transitions? (offered, not decided)
+- "Easy mode" roadmap not yet written into milestones. Proposed order: (1) structure analysis [done in scrub form], (2) transition *recipes* compiled to v0.3 JSON (loop-out, long blend, cut on drop, …), (3) English planner + English edits, (4) later a fuller studio. User to confirm before it goes into `docs/milestones.md`.
+
+### Next session should
+- Ask the user which direction: the "easy mode" roadmap (recipes → English planner) or M3 stems. Write the chosen plan into milestones first.
+- M5 must still include the master limiter (renders clip; peaks hit 1.0 in PCM_16).
+
+### Notes for future sessions
+- Beat numbers from the old prototype don't transfer reliably (its OMT 592 was near the track's end on our grid; 184 was right). Always check positions with `dj-segue scrub`.
+- A 4-beat circular-phase check misreads syncopated tracks (Starships alternates ±half-beat readings every 4 beats in the *source*). Compare render vs source, or use 16-beat windows.
+- Section boundaries are reliable; labels aren't. Breaks (short bass dropouts) are the best entry-point markers — OMT's 184–192 break is where the user's ear landed.
+- Browser checks: audio stays suspended until a real click/key (script calls don't count), and background tabs throttle timers to ~1 s — don't mistake that for a timing bug.
+- A structure `energy` strip needs a tighter dB range (12) than bass (30) to be readable.

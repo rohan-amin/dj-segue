@@ -6,9 +6,11 @@ each `Ramp` moves it from `start_value` to `end_value` over
 with start_sec == end_sec is an instant jump (how `step` keyframes and `cut`
 transitions are expressed).
 
-It also resolves the timeline into mix-time spans (`timeline_spans`): where
-each play/silence segment sits in the mix, what part of the track it reads,
-and at what playback rate. Engine and validator both use it, so segment
+It also resolves the timeline into mix-time spans (`resolve_timeline`): where
+each play/loop/silence segment sits in the mix, what part of the track it
+reads (and, for loops, where each repetition starts), and at what playback
+rate — plus the end time of every segment with an `id`, which `{"after": id}`
+positions resolve against. Engine and validator both use it, so segment
 timing is computed in exactly one place.
 
 Two sources compile into envelopes:
@@ -31,8 +33,10 @@ from dj_segue.schema.plan import (
     CrossfaderLane,
     DeckVolumeLane,
     FloatKeyframe,
+    LoopSegment,
     PlaySegment,
     Plan,
+    SecondsDur,
     SilenceSegment,
     TransitionSegment,
 )
@@ -44,8 +48,9 @@ from dj_segue.time_math import (
     track_pos_to_seconds,
 )
 
-# `equal_power` is internal-only (not a schema interpolation): a sin/cos fade
-# whose squared gains sum to 1 across a crossfade, so loudness doesn't dip.
+# `equal_power`: a sin/cos fade whose squared gains sum to 1 across a
+# crossfade, so loudness doesn't dip. Crossfade transitions use it; lanes can
+# too (v0.3).
 Shape = Literal["linear", "step", "exponential", "equal_power"]
 
 
@@ -114,12 +119,23 @@ def shape_value(shape: Shape, v1: float, v2: float, t):
 
 
 @dataclass(frozen=True)
+class LoopRep:
+    """One pass of a loop: plays track [loop start, loop start + track_len_sec)
+    over mix-time [mix_start_sec, mix_end_sec). The next pass starts at mix_end_sec."""
+
+    mix_start_sec: float
+    mix_end_sec: float
+    track_len_sec: float
+
+
+@dataclass(frozen=True)
 class Span:
-    """A play or silence segment resolved to mix-time.
+    """A play, loop or silence segment resolved to mix-time.
 
     For `play`: the track is read from `track_from_sec` at `rate` (track-seconds
     per mix-second), so it covers track time
     [track_from_sec, track_from_sec + (mix_end_sec - mix_start_sec) * rate).
+    For `loop`: every rep in `reps` restarts at `track_from_sec`.
     Silence spans have track_id None and rate 1.
 
     Rate is constant per segment for now. When tempo becomes an automation
@@ -127,38 +143,67 @@ class Span:
     """
 
     index: int  # timeline index
-    kind: Literal["play", "silence"]
+    kind: Literal["play", "silence", "loop"]
     deck: int
     mix_start_sec: float
     mix_end_sec: float
     track_id: str | None = None
     track_from_sec: float = 0.0
     rate: float = 1.0
+    reps: tuple[LoopRep, ...] = ()
 
 
-def segment_rate(seg: PlaySegment, grid: TrackGrid) -> float:
-    """Playback rate for a play segment: target tempo over the track's tempo."""
+@dataclass(frozen=True)
+class Timeline:
+    spans: list[Span]
+    # segment id → the segment's mix end time (seconds); what `{"after": id}`
+    # positions resolve against.
+    anchors: dict[str, float]
+
+
+def segment_rate(
+    seg: PlaySegment | LoopSegment, grid: TrackGrid, mix_tempo: float
+) -> float:
+    """Playback rate for a play/loop segment: target tempo over the track's tempo."""
     if seg.target_bpm is None:
         return 1.0
-    return seg.target_bpm / grid.bpm
+    target = mix_tempo if seg.target_bpm == "mix" else seg.target_bpm
+    return target / grid.bpm
 
 
-def timeline_spans(
+def resolve_timeline(
     plan: Plan,
     mix_tempo: float,
     grids: dict[str, TrackGrid] | None = None,
-) -> list[Span]:
-    """Resolve every play/silence segment to mix-time, in timeline order.
+) -> Timeline:
+    """Resolve every segment to mix-time, in timeline order.
 
-    A segment without `start_at` begins where the previous one on its deck
-    ended. Transitions don't occupy decks (they only change gain) and are
-    not included. Raises ValueError/TypeError on unresolvable positions (e.g.
-    a beat position on an auto-bpm track with no grid).
+    A play/loop/silence segment without `start_at` begins where the previous
+    one on its deck ended. Transitions don't occupy decks (they only change
+    gain) and aren't spans, but their end times are anchors. An `after`
+    position can only name a segment earlier in the timeline. Raises
+    ValueError/TypeError on unresolvable positions (e.g. a beat position on
+    an auto-bpm track with no grid).
     """
     grids = grids or {}
     spans: list[Span] = []
+    anchors: dict[str, float] = {}
     cursor: dict[int, float] = {}
+
+    def start_of(seg) -> float:
+        if seg.start_at is not None:
+            return mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+        return cursor.get(seg.deck, 0.0)
+
     for i, seg in enumerate(plan.timeline):
+        if isinstance(seg, TransitionSegment):
+            start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+            end = start
+            if seg.style != "cut":
+                end += duration_to_seconds(seg.duration, mix_tempo)
+            if seg.id is not None:
+                anchors[seg.id] = end
+            continue
         if isinstance(seg, SilenceSegment):
             start = cursor.get(seg.deck, 0.0)
             end = start + duration_to_seconds(seg.duration, mix_tempo)
@@ -170,17 +215,51 @@ def timeline_spans(
             to_sec = track_pos_to_seconds(seg.to, track, grid)
             rate = 1.0
             if seg.target_bpm is not None:
-                rate = segment_rate(seg, resolve_grid(track, grid))
-            if seg.start_at is not None:
-                start = mix_pos_to_seconds(seg.start_at, mix_tempo)
-            else:
-                start = cursor.get(seg.deck, 0.0)
+                rate = segment_rate(seg, resolve_grid(track, grid), mix_tempo)
+            start = start_of(seg)
             end = start + max(0.0, to_sec - from_sec) / rate
             spans.append(Span(i, "play", seg.deck, start, end, seg.track, from_sec, rate))
+        elif isinstance(seg, LoopSegment):
+            track = plan.tracks[seg.track]
+            grid = grids.get(seg.track)
+            from_sec = track_pos_to_seconds(seg.from_, track, grid)
+            rate = 1.0
+            if seg.target_bpm is not None:
+                rate = segment_rate(seg, resolve_grid(track, grid), mix_tempo)
+            start = start_of(seg)
+            reps: list[LoopRep] = []
+            t = start
+            for step in seg.schedule:
+                track_len = _track_duration_sec(step.length, track, grid)
+                for _ in range(step.repetitions):
+                    reps.append(LoopRep(t, t + track_len / rate, track_len))
+                    t += track_len / rate
+            end = t
+            spans.append(
+                Span(i, "loop", seg.deck, start, end, seg.track, from_sec, rate, tuple(reps))
+            )
         else:
             continue
+        if seg.id is not None:
+            anchors[seg.id] = end
         cursor[seg.deck] = end
-    return spans
+    return Timeline(spans, anchors)
+
+
+def timeline_spans(
+    plan: Plan,
+    mix_tempo: float,
+    grids: dict[str, TrackGrid] | None = None,
+) -> list[Span]:
+    """The play/loop/silence spans of `resolve_timeline`."""
+    return resolve_timeline(plan, mix_tempo, grids).spans
+
+
+def _track_duration_sec(dur, track, grid: TrackGrid | None) -> float:
+    """A track-time duration (beats/bars at the track's tempo) in track seconds."""
+    if isinstance(dur, SecondsDur):
+        return float(dur.seconds)
+    return duration_to_seconds(dur, resolve_grid(track, grid).bpm)
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +274,14 @@ def keyframes_to_envelope(
     source: str,
     *,
     default: float = 1.0,
+    anchors: dict[str, float] | None = None,
 ) -> Envelope:
     if not keyframes:
         return Envelope(initial=default, ramps=(), source=source)
-    pts = [(mix_pos_to_seconds(kf.at, mix_tempo), float(kf.value)) for kf in keyframes]
+    pts = [
+        (mix_pos_to_seconds(kf.at, mix_tempo, anchors), float(kf.value))
+        for kf in keyframes
+    ]
     ramps: list[Ramp] = []
     for (s1, v1), (s2, v2) in zip(pts, pts[1:]):
         if interpolation == "step":
@@ -209,17 +292,25 @@ def keyframes_to_envelope(
     return Envelope(initial=pts[0][1], ramps=tuple(ramps), source=source)
 
 
-def deck_volume_envelopes(plan: Plan, deck: int, mix_tempo: float) -> list[Envelope]:
+def deck_volume_envelopes(
+    plan: Plan, deck: int, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> list[Envelope]:
     return [
         keyframes_to_envelope(
-            lane.keyframes, lane.interpolation, mix_tempo, f"automation[{i}] deck_volume"
+            lane.keyframes,
+            lane.interpolation,
+            mix_tempo,
+            f"automation[{i}] deck_volume",
+            anchors=anchors,
         )
         for i, lane in enumerate(plan.automation)
         if isinstance(lane, DeckVolumeLane) and lane.deck == deck
     ]
 
 
-def crossfader_envelope(plan: Plan, mix_tempo: float) -> Envelope | None:
+def crossfader_envelope(
+    plan: Plan, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> Envelope | None:
     """The crossfader *position* envelope (-1..+1), or None if the plan has no
     crossfader lane. Multiple crossfader lanes are rejected by the validator."""
     for i, lane in enumerate(plan.automation):
@@ -230,6 +321,7 @@ def crossfader_envelope(plan: Plan, mix_tempo: float) -> Envelope | None:
                 mix_tempo,
                 f"automation[{i}] crossfader",
                 default=0.0,
+                anchors=anchors,
             )
     return None
 
@@ -252,8 +344,13 @@ def crossfader_gains(position):
 # ---------------------------------------------------------------------------
 
 
-def transition_envelopes(plan: Plan, mix_tempo: float) -> dict[int, Envelope]:
+def transition_envelopes(
+    plan: Plan, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> dict[int, Envelope]:
     """Expand every crossfade/cut transition into per-deck gain envelopes.
+
+    `anchors` (Timeline.anchors) is needed when a transition starts at an
+    `after` position.
 
     `vocal_handoff` is stem-level (M3) and is not compiled here; executors that
     can't handle it must reject the plan before rendering.
@@ -262,7 +359,7 @@ def transition_envelopes(plan: Plan, mix_tempo: float) -> dict[int, Envelope]:
     for i, seg in enumerate(plan.timeline):
         if not isinstance(seg, TransitionSegment) or seg.style == "vocal_handoff":
             continue
-        start = mix_pos_to_seconds(seg.start_at, mix_tempo)
+        start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
         if seg.style == "cut":
             end, shape = start, "step"
         else:

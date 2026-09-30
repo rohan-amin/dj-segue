@@ -1,6 +1,6 @@
-"""Pydantic models for the dj-segue plan schema (v0.1).
+"""Pydantic models for the dj-segue plan schema (v0.1–v0.3).
 
-The shape mirrors `docs/schema-v0.1.md`. Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.3.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -62,6 +62,23 @@ Position = Annotated[
 ]
 
 
+class AfterPos(BaseModel):
+    """v0.3, mix-time only: the moment segment `after` ends, plus `offset`
+    (which may be negative, e.g. `{"beats": -16}` = 16 beats before the end)."""
+
+    model_config = _FORBID
+    after: str
+    offset: "Duration | None" = None
+
+
+# Mix-time positions (start_at, keyframe `at`). Cues stay in the union so the
+# validator can report "cue not allowed in mix-time" rather than a parse error.
+MixPosition = Annotated[
+    Union[BeatPos, BarPos, SecondPos, CuePos, AfterPos],
+    BeforeValidator(_normalize_position),
+]
+
+
 class BeatsDur(BaseModel):
     model_config = _FORBID
     beats: float
@@ -78,6 +95,8 @@ class SecondsDur(BaseModel):
 
 
 Duration = Union[BeatsDur, BarsDur, SecondsDur]
+
+AfterPos.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -165,24 +184,56 @@ class Meta(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# v0.2: time-stretch a segment so the track plays at this tempo (pitch
+# preserved). v0.3: "mix" = the mix tempo. Omitted → the track's natural tempo.
+TargetBpm = Annotated[float, Field(gt=0)] | Literal["mix"]
+
+
 class PlaySegment(BaseModel):
     model_config = _FORBID
     type: Literal["play"]
+    id: str | None = None  # v0.3: referenced by `{"after": id}` positions
     deck: int
     track: str
     from_: Position = Field(alias="from")
     to: Position
-    start_at: Position | None = None
-    # v0.2: time-stretch this segment so the track plays at this tempo (pitch
-    # preserved). Omitted → the track's natural tempo.
-    target_bpm: float | None = Field(default=None, gt=0)
+    start_at: MixPosition | None = None
+    target_bpm: TargetBpm | None = None
 
 
 class SilenceSegment(BaseModel):
     model_config = _FORBID
     type: Literal["silence"]
+    id: str | None = None
     deck: int
     duration: Duration
+
+
+class LoopStep(BaseModel):
+    """`repetitions` passes over the first `length` (track-time) of the loop."""
+
+    model_config = _FORBID
+    length: Duration
+    repetitions: int = Field(ge=1)
+
+
+class LoopSegment(BaseModel):
+    """v0.3: repeat a region of a track that starts at `from`.
+
+    The start stays fixed; each schedule step sets the loop length, so a
+    shrinking schedule is a tightening loop. The segment lasts the sum of
+    length × repetitions (converted to mix-time by the playback rate).
+    """
+
+    model_config = _FORBID
+    type: Literal["loop"]
+    id: str | None = None
+    deck: int
+    track: str
+    from_: Position = Field(alias="from")
+    start_at: MixPosition | None = None
+    target_bpm: TargetBpm | None = None
+    schedule: list[LoopStep] = Field(min_length=1)
 
 
 TransitionStyle = Literal["crossfade", "cut", "vocal_handoff"]
@@ -191,15 +242,16 @@ TransitionStyle = Literal["crossfade", "cut", "vocal_handoff"]
 class TransitionSegment(BaseModel):
     model_config = _FORBID
     type: Literal["transition"]
+    id: str | None = None
     style: TransitionStyle
     from_deck: int
     to_deck: int
-    start_at: Position
+    start_at: MixPosition
     duration: Duration
 
 
 Segment = Annotated[
-    Union[PlaySegment, SilenceSegment, TransitionSegment],
+    Union[PlaySegment, SilenceSegment, LoopSegment, TransitionSegment],
     Field(discriminator="type"),
 ]
 
@@ -209,18 +261,19 @@ Segment = Annotated[
 # ---------------------------------------------------------------------------
 
 
-Interpolation = Literal["linear", "step", "exponential"]
+# "equal_power" (v0.3): sin/cos quarter-wave, as used by crossfade transitions.
+Interpolation = Literal["linear", "step", "exponential", "equal_power"]
 
 
 class FloatKeyframe(BaseModel):
     model_config = _FORBID
-    at: Position
+    at: MixPosition
     value: float
 
 
 class DbKeyframe(BaseModel):
     model_config = _FORBID
-    at: Position
+    at: MixPosition
     value_db: float
 
 
@@ -291,18 +344,24 @@ class Plan(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _gate_v02_features(self) -> "Plan":
-        if self.schema_version != "0.1":
-            return self
-        problems = [
-            f"tracks.{tid}: bpm is required in schema 0.1 (optional from 0.2)"
-            for tid, t in self.tracks.items()
-            if t.bpm is None
-        ] + [
-            f"timeline[{i}]: target_bpm requires schema_version 0.2"
-            for i, seg in enumerate(self.timeline)
-            if isinstance(seg, PlaySegment) and seg.target_bpm is not None
-        ]
+    def _gate_versioned_features(self) -> "Plan":
+        v = self.schema_version
+        problems: list[str] = []
+        if v == "0.1":
+            problems += [
+                f"tracks.{tid}: bpm is required in schema 0.1 (optional from 0.2)"
+                for tid, t in self.tracks.items()
+                if t.bpm is None
+            ] + [
+                f"timeline[{i}]: target_bpm requires schema_version 0.2"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, PlaySegment) and seg.target_bpm is not None
+            ]
+        if v in ("0.1", "0.2"):
+            problems += [
+                f"{where}: {what} requires schema_version 0.3"
+                for where, what in _v03_features(self)
+            ]
         if problems:
             raise ValueError("; ".join(problems))
         return self
@@ -328,6 +387,27 @@ class Plan(BaseModel):
             if not 1 <= k <= 4:
                 raise ValueError(f"Deck keys must be in 1..4; got {k}")
         return v
+
+
+def _v03_features(plan: "Plan"):
+    """(where, what) for every use of a schema-0.3 feature in the plan."""
+    for i, seg in enumerate(plan.timeline):
+        where = f"timeline[{i}]"
+        if isinstance(seg, LoopSegment):
+            yield where, "the loop segment"
+            continue
+        if seg.id is not None:
+            yield where, "segment id"
+        if isinstance(seg, PlaySegment) and seg.target_bpm == "mix":
+            yield where, 'target_bpm "mix"'
+        if isinstance(getattr(seg, "start_at", None), AfterPos):
+            yield where, "an `after` position"
+    for i, lane in enumerate(plan.automation):
+        if lane.interpolation == "equal_power":
+            yield f"automation[{i}]", 'interpolation "equal_power"'
+        for j, kf in enumerate(lane.keyframes):
+            if isinstance(kf.at, AfterPos):
+                yield f"automation[{i}].keyframes[{j}]", "an `after` position"
 
 
 def load_plan(path: str | Path) -> Plan:

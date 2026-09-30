@@ -1,7 +1,7 @@
 """Native audio engine — offline WAV render and live sounddevice playback.
 
-Supported: `play`/`silence` segments, `crossfade`/`cut` transitions, and
-`deck_volume`/`crossfader` automation. Anything else in a plan (stem_volume,
+Supported: `play`/`loop`/`silence` segments, `crossfade`/`cut` transitions,
+and `deck_volume`/`crossfader` automation. Anything else in a plan (stem_volume,
 eq, vocal_handoff, stem-based tracks) raises NotImplementedError naming the
 milestone that adds it — the engine never silently ignores part of a plan.
 
@@ -9,6 +9,12 @@ Single sample rate (mismatched tracks error out). A play segment with
 `target_bpm` is time-stretched (pitch preserved) by target / track tempo;
 otherwise the track plays at its natural tempo. mix_tempo converts mix-time
 positions to seconds.
+
+Loops: each repetition starts at its own rounded mix sample (no drift), and
+every seam is a short linear crossfade placed just *before* the boundary —
+the outgoing pass fades out over its last LOOP_SEAM_SEC while the incoming
+pass fades in from a pre-roll of track audio just before the loop start — so
+the transient on the loop's first beat is untouched and there's no click.
 
 Per-deck gain = product of: transition envelope × deck_volume lanes ×
 crossfader gain (decks 1–2 only). All come from dj_segue.compiler.
@@ -27,7 +33,7 @@ from dj_segue.compiler import (
     crossfader_envelope,
     crossfader_gains,
     deck_volume_envelopes,
-    timeline_spans,
+    resolve_timeline,
     transition_envelopes,
 )
 from dj_segue.executor.base import MixExecutor, RenderResult
@@ -43,14 +49,24 @@ from dj_segue.schema.validator import resolved_mix_tempo
 from dj_segue.time_math import TrackGrid
 
 
+# Loop seam crossfade length (seconds of mix time).
+LOOP_SEAM_SEC = 0.003
+
+
 @dataclass(frozen=True)
 class _CompiledPlay:
+    """A play or loop span in samples. A play is a loop with one rep."""
+
     deck: int
     mix_start_sample: int
     mix_end_sample: int  # exclusive
     track_start_sample: int  # may be slightly negative (grid anchor tolerance)
     track_id: str
     rate: float  # track-seconds per mix-second; 1.0 = natural tempo
+    # Loops only: each rep's mix start sample (absolute), and the longest
+    # rep's length in track samples.
+    rep_starts: tuple[int, ...] = ()
+    loop_track_samples: int = 0
 
 
 class NativeEngine(MixExecutor):
@@ -70,7 +86,8 @@ class NativeEngine(MixExecutor):
                 "pass the preprocessed grids (or set meta.mix_tempo)"
             )
 
-        compiled = self._compile_play_segments(plan, sample_rate, mix_tempo, grids)
+        timeline = resolve_timeline(plan, mix_tempo, grids)
+        compiled = self._compile_play_segments(timeline.spans, sample_rate)
         if not compiled:
             return RenderResult(
                 samples=np.zeros((0, 2), dtype=np.float32),
@@ -90,7 +107,7 @@ class NativeEngine(MixExecutor):
             )
 
         gains = self._deck_gains(
-            plan, list(deck_buffers), mix_tempo, sample_rate, total_samples
+            plan, list(deck_buffers), mix_tempo, sample_rate, total_samples, timeline.anchors
         )
         for deck, buf in deck_buffers.items():
             buf *= gains[deck][:, None]
@@ -173,24 +190,24 @@ class NativeEngine(MixExecutor):
             )
         return loaded, rates.pop()
 
-    def _compile_play_segments(
-        self,
-        plan: Plan,
-        sample_rate: int,
-        mix_tempo: float,
-        grids: dict[str, TrackGrid] | None = None,
-    ) -> list[_CompiledPlay]:
+    @staticmethod
+    def _compile_play_segments(spans: list[Span], sample_rate: int) -> list[_CompiledPlay]:
+        def smp(sec: float) -> int:
+            return int(round(sec * sample_rate))
+
         return [
             _CompiledPlay(
                 deck=sp.deck,
-                mix_start_sample=int(round(sp.mix_start_sec * sample_rate)),
-                mix_end_sample=int(round(sp.mix_end_sec * sample_rate)),
-                track_start_sample=int(round(sp.track_from_sec * sample_rate)),
+                mix_start_sample=smp(sp.mix_start_sec),
+                mix_end_sample=smp(sp.mix_end_sec),
+                track_start_sample=smp(sp.track_from_sec),
                 track_id=sp.track_id,  # type: ignore[arg-type]
                 rate=sp.rate,
+                rep_starts=tuple(smp(r.mix_start_sec) for r in sp.reps),
+                loop_track_samples=max((smp(r.track_len_sec) for r in sp.reps), default=0),
             )
-            for sp in timeline_spans(plan, mix_tempo, grids)
-            if sp.kind == "play"
+            for sp in spans
+            if sp.kind in ("play", "loop")
         ]
 
     # Extra track audio fed to the stretcher past the segment end, so its
@@ -205,12 +222,53 @@ class NativeEngine(MixExecutor):
         Reads outside the track (a slightly negative start from the grid
         anchor, or running past the end) come back as silence.
         """
-        if c.rate == 1.0:
-            return _read_padded(audio, c.track_start_sample, n)
+        if c.rep_starts:
+            return self._loop_audio(audio, c, n, sample_rate)
+        return self._mix_rate_audio(audio, c.track_start_sample, n, c.rate, sample_rate)
+
+    def _mix_rate_audio(
+        self, audio: np.ndarray, track_start: int, n: int, rate: float, sample_rate: int
+    ) -> np.ndarray:
+        """`n` mix samples of track audio from `track_start`, played at `rate`."""
+        if rate == 1.0:
+            return _read_padded(audio, track_start, n)
         tail = int(self._STRETCH_TAIL_SEC * sample_rate)
-        n_in = int(np.ceil(n * c.rate)) + tail
-        src = _read_padded(audio, c.track_start_sample, n_in)
-        return _fit_length(time_stretch(src, sample_rate, c.rate), n)
+        n_in = int(np.ceil(n * rate)) + tail
+        src = _read_padded(audio, track_start, n_in)
+        return _fit_length(time_stretch(src, sample_rate, rate), n)
+
+    def _loop_audio(
+        self, audio: np.ndarray, c: _CompiledPlay, n: int, sample_rate: int
+    ) -> np.ndarray:
+        """Render a loop span: every rep replays the loop from its start.
+
+        The loop region (longest rep, plus a pre-roll of `seam` mix samples
+        before the loop start) is brought to mix rate once; shorter reps use
+        a prefix of it. Rep k>0 is written from `seam` samples before its
+        start, fading in over the pre-roll while rep k-1 fades out over the
+        same samples, so the two sum to a linear crossfade ending exactly on
+        the boundary.
+        """
+        seam = int(round(LOOP_SEAM_SEC * sample_rate))
+        pre_track = int(round(seam * c.rate))
+        region_mix = int(np.ceil(c.loop_track_samples / c.rate)) + 2  # rounding slack
+        src = self._mix_rate_audio(
+            audio, c.track_start_sample - pre_track, seam + region_mix, c.rate, sample_rate
+        )
+        out = np.zeros((n, audio.shape[1]), dtype=np.float32)
+        starts = [s - c.mix_start_sample for s in c.rep_starts] + [n]
+        for k, (a, b) in enumerate(zip(starts, starts[1:])):
+            length = b - a
+            # Keep fades inside short reps (not reachable at musical lengths).
+            f_in = min(seam, length // 2) if k > 0 else 0
+            f_out = min(seam, length // 2) if b < n else 0
+            chunk = src[seam - f_in : seam + length].copy()
+            if f_in:
+                chunk[:f_in] *= _ramp(f_in, rising=True)[:, None]
+            if f_out:
+                chunk[-f_out:] *= _ramp(f_out, rising=False)[:, None]
+            out[a - f_in : b] += chunk
+        return out
 
     def _deck_gains(
         self,
@@ -219,9 +277,10 @@ class NativeEngine(MixExecutor):
         mix_tempo: float,
         sample_rate: int,
         total_samples: int,
+        anchors: dict[str, float],
     ) -> dict[int, np.ndarray]:
-        transitions = transition_envelopes(plan, mix_tempo)
-        xfade_env = crossfader_envelope(plan, mix_tempo)
+        transitions = transition_envelopes(plan, mix_tempo, anchors)
+        xfade_env = crossfader_envelope(plan, mix_tempo, anchors)
         xfade = None
         if xfade_env is not None:
             pos = render_envelope(xfade_env, sample_rate, total_samples)
@@ -230,7 +289,7 @@ class NativeEngine(MixExecutor):
 
         gains: dict[int, np.ndarray] = {}
         for deck in decks:
-            envs = deck_volume_envelopes(plan, deck, mix_tempo)
+            envs = deck_volume_envelopes(plan, deck, mix_tempo, anchors)
             if deck in transitions:
                 envs.append(transitions[deck])
             g = np.ones(total_samples, dtype=np.float32)
@@ -249,6 +308,12 @@ def _read_padded(audio: np.ndarray, start: int, n: int) -> np.ndarray:
     if hi > lo:
         out[lo - start : hi - start] = audio[lo:hi]
     return out
+
+
+def _ramp(n: int, *, rising: bool) -> np.ndarray:
+    """Linear fade of n samples; a rising and a falling ramp sum to 1 per sample."""
+    t = (np.arange(n, dtype=np.float32) + 0.5) / n
+    return t if rising else 1.0 - t
 
 
 def _fit_length(x: np.ndarray, n: int) -> np.ndarray:

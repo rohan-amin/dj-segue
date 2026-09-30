@@ -10,7 +10,7 @@ This is an early-stage project. See `docs/milestones.md` for the roadmap.
 
 ## Status
 
-Schema v0.2. General mixing works: plans with crossfades, cuts, volume automation and beatmatched tempo changes render sample-accurately (milestones M1–M2.6). Next: stems (M3).
+Schema v0.3. General mixing works: plans with crossfades, cuts, volume automation, beatmatched tempo changes and tightening loops render sample-accurately (milestones M1–M2.6, M4). Next: stems (M3).
 
 ---
 
@@ -24,10 +24,21 @@ dj-segue inspect    examples/crossfade_mix.plan.jsonc   # plan summary + validat
 dj-segue preprocess examples/crossfade_mix.plan.jsonc   # analyze tracks (tempo, beat grid)
 dj-segue play       examples/crossfade_mix.plan.jsonc   # play through the speakers
 dj-segue play       examples/crossfade_mix.plan.jsonc --render-to /tmp/out.wav
+dj-segue scrub      audio/some_track.mp3                # find beat numbers by ear
 ```
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
-track `path`s at them. See `examples/real_mix.plan.jsonc` and `docs/schema-v0.2.md`.
+track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`
+and `docs/schema-v0.3.md`.
+
+`dj-segue scrub <file>` opens the track in your browser (a local page; nothing is
+uploaded) to find beat numbers by ear. It shows the whole song as a map — waveform,
+energy and bass strips, likely section starts, and amber **breaks** (short bass
+dropouts before a phrase, natural entry points) — plus a zoomed 8-bar view with every
+beat numbered. The big readout shows the beat you're hearing on the same grid plans
+use (beat 0 = first downbeat, bar N = beat 4N). Buttons (and keys) move by beat, bar,
+8 bars or section, loop ½–16 beats, toggle a click on the grid, and mark beats to copy
+into a plan as `{ "beat": N }`.
 
 ---
 
@@ -41,7 +52,7 @@ track `path`s at them. See `examples/real_mix.plan.jsonc` and `docs/schema-v0.2.
 
 A **plan** is a score-style JSONC document describing what each deck does over the course of a mix. It's hand-editable for testing and AI-generated for real use. The plan is engine-agnostic — the same plan can run on the native Python audio engine (default) or via a Mixxx bridge (for cross-validation).
 
-See `docs/architecture.md` for the design rationale and `docs/schema-v0.1.md` for the plan format.
+See `docs/architecture.md` for the design rationale and `docs/schema-v0.3.md` for the plan format.
 
 ---
 

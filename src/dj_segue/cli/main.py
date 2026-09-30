@@ -138,5 +138,30 @@ def play(
         typer.echo(f"played {result.duration_sec:.3f}s of audio")
 
 
+@app.command()
+def scrub(
+    audio_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    bpm: float | None = typer.Option(
+        None, "--bpm", help="Override the detected tempo (as `bpm` does in a plan)."
+    ),
+    start_beat: int = typer.Option(0, "--start-beat", help="Beat to start at."),
+    port: int = typer.Option(0, "--port", help="Port to serve on (default: any free port)."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open a browser."),
+) -> None:
+    """Open a track in the browser with live beat/bar numbers and a song map,
+    to find positions for a plan by ear."""
+    from dj_segue.scrub import load_track, serve
+
+    typer.echo(f"analyzing {audio_path.name} …")
+    try:
+        track = load_track(audio_path, bpm, start_beat)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+    marks = serve(track, port, open_browser=not no_browser)
+    if marks:
+        typer.echo("marked beats: " + ", ".join(str(m) for m in marks))
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
