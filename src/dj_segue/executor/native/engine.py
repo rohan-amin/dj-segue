@@ -16,6 +16,12 @@ the outgoing pass fades out over its last LOOP_SEAM_SEC while the incoming
 pass fades in from a pre-roll of track audio just before the loop start — so
 the transient on the loop's first beat is untouched and there's no click.
 
+Jumps get the same seam: when a segment starts exactly where the previous one
+on its deck ends, and the audio doesn't simply carry on (another track or
+position, or a stretched segment), the previous segment fades out over its
+last LOOP_SEAM_SEC while the new one fades in from a pre-roll of track audio
+just before its `from`.
+
 Per-deck gain = product of: transition envelope × deck_volume lanes ×
 crossfader gain (decks 1–2 only). All come from dj_segue.compiler.
 """
@@ -49,7 +55,7 @@ from dj_segue.schema.validator import resolved_mix_tempo
 from dj_segue.time_math import TrackGrid
 
 
-# Loop seam crossfade length (seconds of mix time).
+# Loop / jump seam crossfade length (seconds of mix time).
 LOOP_SEAM_SEC = 0.003
 
 
@@ -97,13 +103,23 @@ class NativeEngine(MixExecutor):
         total_samples = max(c.mix_end_sample for c in compiled)
 
         deck_buffers: dict[int, np.ndarray] = {}
-        for c in compiled:
+        seam = int(round(LOOP_SEAM_SEC * sample_rate))
+        prev_on_deck: dict[int, _CompiledPlay] = {}
+        for c in sorted(compiled, key=lambda c: (c.deck, c.mix_start_sample)):
             buf = deck_buffers.setdefault(
                 c.deck, np.zeros((total_samples, 2), dtype=np.float32)
             )
             n = c.mix_end_sample - c.mix_start_sample
-            buf[c.mix_start_sample : c.mix_end_sample] += self._segment_audio(
-                track_audio[c.track_id], c, n, sample_rate
+            prev = prev_on_deck.get(c.deck)
+            prev_on_deck[c.deck] = c
+            lead = 0
+            if prev is not None and _needs_seam(prev, c):
+                lead = min(seam, n, prev.mix_end_sample - prev.mix_start_sample)
+                buf[c.mix_start_sample - lead : c.mix_start_sample] *= _ramp(
+                    lead, rising=False
+                )[:, None]
+            buf[c.mix_start_sample - lead : c.mix_end_sample] += self._segment_audio(
+                track_audio[c.track_id], c, n, sample_rate, lead
             )
 
         gains = self._deck_gains(
@@ -215,16 +231,24 @@ class NativeEngine(MixExecutor):
     _STRETCH_TAIL_SEC = 0.25
 
     def _segment_audio(
-        self, audio: np.ndarray, c: _CompiledPlay, n: int, sample_rate: int
+        self, audio: np.ndarray, c: _CompiledPlay, n: int, sample_rate: int, lead: int = 0
     ) -> np.ndarray:
-        """Exactly `n` mix samples of the segment's audio, stretched if rate != 1.
+        """`lead` + `n` mix samples of the segment's audio, stretched if rate != 1.
 
+        The first `lead` samples are a pre-roll of the track audio before
+        `from`, fading in (a jump seam); the segment itself follows exactly.
         Reads outside the track (a slightly negative start from the grid
         anchor, or running past the end) come back as silence.
         """
         if c.rep_starts:
-            return self._loop_audio(audio, c, n, sample_rate)
-        return self._mix_rate_audio(audio, c.track_start_sample, n, c.rate, sample_rate)
+            return self._loop_audio(audio, c, n, sample_rate, lead)
+        pre_track = int(round(lead * c.rate))
+        out = self._mix_rate_audio(
+            audio, c.track_start_sample - pre_track, lead + n, c.rate, sample_rate
+        )
+        if lead:
+            out[:lead] *= _ramp(lead, rising=True)[:, None]
+        return out
 
     def _mix_rate_audio(
         self, audio: np.ndarray, track_start: int, n: int, rate: float, sample_rate: int
@@ -238,7 +262,7 @@ class NativeEngine(MixExecutor):
         return _fit_length(time_stretch(src, sample_rate, rate), n)
 
     def _loop_audio(
-        self, audio: np.ndarray, c: _CompiledPlay, n: int, sample_rate: int
+        self, audio: np.ndarray, c: _CompiledPlay, n: int, sample_rate: int, lead: int = 0
     ) -> np.ndarray:
         """Render a loop span: every rep replays the loop from its start.
 
@@ -247,7 +271,8 @@ class NativeEngine(MixExecutor):
         a prefix of it. Rep k>0 is written from `seam` samples before its
         start, fading in over the pre-roll while rep k-1 fades out over the
         same samples, so the two sum to a linear crossfade ending exactly on
-        the boundary.
+        the boundary. With `lead` (≤ seam), rep 0 does the same over the
+        first `lead` samples of the output.
         """
         seam = int(round(LOOP_SEAM_SEC * sample_rate))
         pre_track = int(round(seam * c.rate))
@@ -255,13 +280,13 @@ class NativeEngine(MixExecutor):
         src = self._mix_rate_audio(
             audio, c.track_start_sample - pre_track, seam + region_mix, c.rate, sample_rate
         )
-        out = np.zeros((n, audio.shape[1]), dtype=np.float32)
-        starts = [s - c.mix_start_sample for s in c.rep_starts] + [n]
+        out = np.zeros((lead + n, audio.shape[1]), dtype=np.float32)
+        starts = [s - c.mix_start_sample + lead for s in c.rep_starts] + [lead + n]
         for k, (a, b) in enumerate(zip(starts, starts[1:])):
             length = b - a
             # Keep fades inside short reps (not reachable at musical lengths).
-            f_in = min(seam, length // 2) if k > 0 else 0
-            f_out = min(seam, length // 2) if b < n else 0
+            f_in = min(seam, length // 2) if k > 0 else lead
+            f_out = min(seam, length // 2) if b < lead + n else 0
             chunk = src[seam - f_in : seam + length].copy()
             if f_in:
                 chunk[:f_in] *= _ramp(f_in, rising=True)[:, None]
@@ -299,6 +324,18 @@ class NativeEngine(MixExecutor):
                 g *= xfade[deck]
             gains[deck] = g
         return gains
+
+
+def _needs_seam(prev: _CompiledPlay, c: _CompiledPlay) -> bool:
+    """True when `c` starts right as `prev` (same deck) ends and the audio
+    jumps. A plain continuation — same track, natural tempo, `c` starting
+    where `prev` stopped — needs none."""
+    if c.mix_start_sample != prev.mix_end_sample:
+        return False
+    if prev.rep_starts or c.track_id != prev.track_id or prev.rate != 1.0 or c.rate != 1.0:
+        return True
+    prev_track_end = prev.track_start_sample + (prev.mix_end_sample - prev.mix_start_sample)
+    return c.track_start_sample != prev_track_end
 
 
 def _read_padded(audio: np.ndarray, start: int, n: int) -> np.ndarray:

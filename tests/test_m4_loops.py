@@ -246,7 +246,8 @@ def test_m4_acceptance_tightening_loop_is_sample_accurate(tmp_path) -> None:
     Deck 1 plays track beats 0–8, then loops from beat 8. Every rep must start
     on the exact mix sample of its beat and replay the track from the exact
     loop-start sample; the only deviation allowed is the seam fade just
-    before each boundary. Afterwards the track resumes from beat 10.
+    before each boundary. Afterwards the track resumes from beat 10 (a jump,
+    so it gets a seam too).
     """
     y = _timecode(tmp_path / "a.wav")
     _timecode(tmp_path / "b.wav")
@@ -261,7 +262,7 @@ def test_m4_acceptance_tightening_loop_is_sample_accurate(tmp_path) -> None:
     bounds = [loop_start + int(b * BEAT) for b in TIGHTENING_REP_BEATS]
     loop_end = loop_start + TIGHTENING_TOTAL * BEAT
     for a, b in zip(bounds, bounds[1:] + [loop_end]):
-        clean = b - seam if b < loop_end else b  # last rep has no seam fade
+        clean = b - seam  # the last rep's seam is the jump to beat 10
         np.testing.assert_array_equal(out[a:clean], y[loop_start : loop_start + clean - a])
     np.testing.assert_array_equal(out[loop_end:], y[10 * BEAT : 14 * BEAT])
 
@@ -306,3 +307,25 @@ def test_equal_power_lane_interpolation() -> None:
     assert env.value_at(1.0) == pytest.approx(np.sin(np.pi / 4))  # midpoint ≈ 0.707
     with pytest.raises(ValidationError, match="requires schema_version 0.3"):
         _plan([_play(1, "a", 0, 8, start=0)], automation=[lane], version="0.2")
+
+
+def test_jump_between_plays_gets_a_seam(tmp_path) -> None:
+    """A jump (play → play from elsewhere) crossfades over the seam before the
+    boundary; the new segment is exact from its first sample. A plain
+    continuation is untouched."""
+    y = _timecode(tmp_path / "a.wav")
+    _timecode(tmp_path / "b.wav")
+    seam = int(round(LOOP_SEAM_SEC * SR))
+    jump = _plan([_play(1, "a", 0, 4, start=0), _play(1, "a", 20, 24)])
+    out = NativeEngine().render(jump, tmp_path).samples[:, 0]
+    b = 4 * BEAT
+    np.testing.assert_array_equal(out[: b - seam], y[: b - seam])
+    np.testing.assert_array_equal(out[b:], y[20 * BEAT : 24 * BEAT])
+    # Over the seam, the old audio fades out while the pre-roll fades in.
+    t = (np.arange(seam) + 0.5) / seam
+    blend = y[b - seam : b] * (1 - t) + y[20 * BEAT - seam : 20 * BEAT] * t
+    np.testing.assert_allclose(out[b - seam : b], blend, atol=1e-6)
+
+    cont = _plan([_play(1, "a", 0, 4, start=0), _play(1, "a", 4, 8)])
+    out = NativeEngine().render(cont, tmp_path).samples[:, 0]
+    np.testing.assert_array_equal(out, y[: 8 * BEAT])
