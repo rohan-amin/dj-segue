@@ -6,13 +6,15 @@
 //   - Fancy from the start of the file to beat 112, then jumps to beat 208
 //     (like hitting a hot cue) and plays to beat 336.
 //   - Like 'em All starts at its beat 0 (first downbeat) 32 beats before
-//     Fancy ends, and an equal-power crossfade over those 32 beats brings
-//     it in as Fancy goes out.
+//     Fancy ends. Over those 32 beats Fancy fades out (equal power) while
+//     Like 'em All comes in on a curve drawn in `dj-segue tune`: it stays
+//     under ~10% for the first half, jumps to ~70% just past halfway, then
+//     eases up to full.
 //   - The mix runs at 91.93 BPM: Fancy's detected tempo (87.55) + 5%. Both
 //     tracks are stretched to it (Fancy +5%, Like 'em All -1.2%).
 
 {
-  "schema_version": "0.4",
+  "schema_version": "0.5",
 
   "meta": {
     "mix_name": "Fancy into Like 'em All",
@@ -47,6 +49,7 @@
     { "type": "transition", "style": "crossfade",
       "from_deck": 1, "to_deck": 2,
       "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
-      "duration": { "beats": 32 } }
+      "duration": { "beats": 32 },
+      "in": { "curve": { "points": [[0, 0], [0.1263, 0.0483], [0.2339, 0.065], [0.4776, 0.1004], [0.5315, 0.7216], [0.625, 0.8316], [0.75, 0.924], [0.875, 0.9808], [1, 1]] } } }
   ]
 }
