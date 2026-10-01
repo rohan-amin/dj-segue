@@ -1,0 +1,52 @@
+// examples/fancy_likeem.plan.jsonc
+//
+// Fancy (Drake) with a 24-bar jump, blending into Like 'em All over 32 beats.
+// Needs your own copies of the tracks in the git-ignored audio/ folder.
+//
+//   - Fancy from the start of the file to beat 112, then jumps to beat 208
+//     (like hitting a hot cue) and plays to beat 336.
+//   - Like 'em All starts at its beat 0 (first downbeat) 32 beats before
+//     Fancy ends, and an equal-power crossfade over those 32 beats brings
+//     it in as Fancy goes out.
+//   - The mix runs at 91.93 BPM: Fancy's detected tempo (87.55) + 5%. Both
+//     tracks are stretched to it (Fancy +5%, Like 'em All -1.2%).
+
+{
+  "schema_version": "0.4",
+
+  "meta": {
+    "mix_name": "Fancy into Like 'em All",
+    "source_prompt": "Fancy with a jump, then bring in Like 'em All over the last 32 beats",
+    "mix_tempo": 91.93
+  },
+
+  "tracks": {
+    "fancy":  { "path": "audio/07 - Fancy [feat. T.I., Swizz Beatz] [Explicit].mp3" },
+    "likeem": { "path": "audio/01 - Like 'em All (Radio Version).mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "fancy" },
+    "2": { "label": "likeem" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "fancy",
+      "from": { "second": 0 }, "to": { "beat": 112 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "fancy_end", "deck": 1, "track": "fancy",
+      "from": { "beat": 208 }, "to": { "beat": 336 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "deck": 2, "track": "likeem",
+      "from": { "beat": 0 }, "to": { "beat": 372 },
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "duration": { "beats": 32 } }
+  ]
+}

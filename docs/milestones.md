@@ -83,6 +83,44 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ---
 
+## M4.5 — Tune: adjust transitions, jumps and loops by ear  (PLANNED 2026-09-30)
+
+**Goal:** Try transition, jump and loop options in a local web page, hear them exactly as `render` will produce them, and save the result back into the plan. (Added 2026-09-30 after hand-tuning the Fancy → Like 'em All blend. The plan file stays the source of truth; this is a listening tool, not a full editor.)
+
+**Shape:** `dj-segue tune <plan>` — local server (stdlib, like `scrub`) + one vanilla-JS page. Pick an item (a transition, a jump, or a loop) from a list; the page shows that region of the mix with both decks' waveforms on the mix beat grid.
+
+**Decided with user (2026-09-30):**
+- Save edits the plan **in place**: only the changed keys of that one segment's text are replaced/added/removed; every other byte (comments, formatting, other segments) is kept.
+- Curves can be **drawn freehand** (schema v0.5, below).
+- Scope: transitions, **jump points** and **loop points**.
+
+**Accuracy rule:** the browser never re-implements engine maths. Each edit is sent to the server, which validates it with the real validator and returns either (a) per-deck gain curves sampled every 1 ms from the real compiler (gain-only edits: instant), or (b) a re-rendered region from the native engine (edits that move audio: a jump/loop point, or a window that moves a segment's start; ~1 s for a few bars).
+
+### Phases
+
+**T1 — Transitions, preset curves.**
+- Windowed render in the engine (`render(..., window=(a, b))`: compile only the spans that overlap the window) and per-deck pre-gain audio for the region.
+- Page: waveforms, beat grid, drawn gain curves; drag out/in window edges (snap to beat; ½/¼ with a modifier); preset curve per side; play from N beats before / loop the region; beat readout.
+- In-place JSONC save (position-tracking scanner over the plan text; field-level replace/insert/delete).
+
+**T2 — Windows that move audio.** Dragging a window past the current overlap moves the incoming segment's `start_at` (and `to` of the outgoing one if needed) → region re-render. The page lists later segments with absolute `start_at` that won't follow the change (suggests `after`).
+
+**T3 — Freehand curves (schema v0.5).**
+- `curve` may be `{ "points": [[t, gain], …], "smooth": bool }`: t and gain in 0–1 across that side's window; t strictly increasing; an `in` curve starts at 0 and ends at 1, an `out` curve 1 → 0. `smooth: false` → straight lines; `true` → monotone cubic (PCHIP: smooth, never overshoots past its points, so gain stays in 0–1).
+- Gains may go up and down inside the window (swells, dips, gated chops). Segments steeper than 2 ms get a 2 ms ramp so nothing clicks.
+- Page: pencil — press and drag to paint over the window (the stroke replaces the curve under it, like DAW automation drawing); the stroke is simplified (Ramer–Douglas–Peucker) to a small point list that stays editable — drag/add/delete points; Shift draws straight lines; smooth toggle.
+- Compiler/engine: a `points` ramp shape, evaluated vectorised (`np.interp` / PCHIP).
+
+**T4 — Jump points.** A jump = two back-to-back segments on one deck. Drag the outgoing `to` and incoming `from` along track beats (snap); play across the jump with pre/post-roll; region re-render (includes the jump seam).
+
+**T5 — Loop points.** Drag a loop's `from`; edit its `schedule` (length, repetitions) in a small table; play the loop with pre-roll; region re-render.
+
+**T6 — A/B snapshots.** Save the current setting as a snapshot, keep editing, switch between snapshots while playing.
+
+**Acceptance test:** The Fancy → Like 'em All blend reshaped in the page with a hand-drawn `in` curve and a moved jump point; saved plan differs from the original only in those keys (comments intact); `dj-segue render` of the saved plan matches what the page played (same sample-level gains; region audio byte-identical).
+
+---
+
 ## M3 — Stems
 
 **Goal:** Vocal-aware transitions.

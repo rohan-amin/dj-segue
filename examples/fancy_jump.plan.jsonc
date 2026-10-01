@@ -1,0 +1,31 @@
+// examples/fancy_jump.plan.jsonc
+//
+// Fancy with a jump: from the start of the file to beat 112, then straight on from beat 208 to 336
+// (a jump of 24 bars, like hitting a hot cue).
+// Mix tempo follows Fancy's detected tempo. Needs your own copy of the
+// track in the git-ignored audio/ folder (see README).
+
+{
+  "schema_version": "0.4",
+
+  "meta": {
+    "mix_name": "Fancy (jump 112 → 208)",
+    "source_prompt": "play Fancy from the start, at beat 112 jump to beat 208, play to beat 336"
+  },
+
+  "tracks": {
+    "fancy": { "path": "audio/07 - Fancy [feat. T.I., Swizz Beatz] [Explicit].mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "fancy" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "fancy",
+      "from": { "second": 0 }, "to": { "beat": 112 }, "start_at": { "beat": 0 } },
+
+    { "type": "play", "deck": 1, "track": "fancy",
+      "from": { "beat": 208 }, "to": { "beat": 336 } }
+  ]
+}
