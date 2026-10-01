@@ -138,3 +138,23 @@ def test_trimming_k_beats_moves_beat_zero_by_k(tmp_path, write_drums) -> None:
         a = analyze_audio(p)
         shift = round((a.grid_anchor(a.detected_bpm) - a.grid_anchor_sec) / per) % 4
         assert shift == (base - trim) % 4, f"trim {trim}"
+
+
+def test_tempo_level_follows_the_reference() -> None:
+    from dj_segue.analyzer.beat import pick_tempo_level
+
+    # Drake's "Fancy": librosa 117.45 (a triplet pulse), beat_this ~88.2.
+    assert pick_tempo_level(117.45, 88.2) == pytest.approx(117.45 * 0.75)
+    assert pick_tempo_level(62.0, 125.0) == pytest.approx(124.0)  # octave
+    assert pick_tempo_level(126.05, 125.0) == 126.05  # already right
+    assert pick_tempo_level(126.05, None) == 126.05  # no beat_this
+
+
+def test_beat_tempo_needs_a_steady_pulse() -> None:
+    from dj_segue.analyzer.downbeat import beat_tempo
+
+    steady = np.arange(64) * 0.5
+    assert beat_tempo(steady) == pytest.approx(120.0)
+    jittery = np.cumsum(np.tile([0.5, 0.25, 0.75], 22))
+    assert beat_tempo(jittery) is None
+    assert beat_tempo(None) is None

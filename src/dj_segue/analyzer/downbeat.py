@@ -1,12 +1,12 @@
 """Downbeat detection via beat_this (CPJKU, 2024) — which beat is a bar's "1".
 
-beat_this is a neural beat/downbeat tracker. We use only its downbeat times:
-the fixed grid from analyzer/beat.py already places beats more precisely than
-its 50 fps frames. Each downbeat votes for a grid position mod 4, and the
+beat_this is a neural beat/downbeat tracker. We use its downbeat times, and
+its beat tempo only to pick the tempo level (analyzer/beat.py): the fixed grid
+places beats more precisely than its 50 fps frames. Each downbeat votes for a grid position mod 4, and the
 winner says how far to shift beat 0 so it lands on a downbeat.
 
 Optional: needs `pip install beat_this` (pulls in PyTorch). Without it,
-`detect_downbeats` returns None and beat 0 stays on the first grid beat.
+`detect_beats` returns None and beat 0 stays on the first grid beat.
 The model checkpoint is downloaded once on first use (~cached by torch hub).
 """
 
@@ -40,12 +40,31 @@ def _model():
     return Audio2Beats(checkpoint_path=CHECKPOINT, device="cpu")
 
 
-def detect_downbeats(y: np.ndarray, sr: int) -> np.ndarray | None:
-    """Downbeat times in seconds, or None if beat_this isn't installed."""
+def detect_beats(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray] | None:
+    """(beat times, downbeat times) in seconds, or None if beat_this isn't installed."""
     if downbeat_model_id() is None:
         return None
-    _beats, downbeats = _model()(np.asarray(y, dtype=np.float32), sr)
-    return np.asarray(downbeats, dtype=np.float64)
+    beats, downbeats = _model()(np.asarray(y, dtype=np.float32), sr)
+    return np.asarray(beats, dtype=np.float64), np.asarray(downbeats, dtype=np.float64)
+
+
+# A beat_this tempo is trusted when this share of its beat intervals sits
+# within 10% of the median (steady pulse, no meter confusion).
+MIN_STEADY_SHARE = 0.8
+
+
+def beat_tempo(beats: np.ndarray | None) -> float | None:
+    """beat_this's tempo (bpm) from its beat times, or None if not steady.
+
+    Coarse (its frames are 20 ms), but reliable about the tempo *level* —
+    unlike librosa's estimate, which can lock onto a triplet pulse."""
+    if beats is None or len(beats) < 16:
+        return None
+    iv = np.diff(beats)
+    med = float(np.median(iv))
+    if med <= 0 or np.mean(np.abs(iv / med - 1) < 0.1) < MIN_STEADY_SHARE:
+        return None
+    return 60.0 / med
 
 
 def downbeat_offset(downbeats: np.ndarray | None, anchor: float, bpm: float) -> int:

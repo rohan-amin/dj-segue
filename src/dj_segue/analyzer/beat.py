@@ -11,8 +11,11 @@ Method:
   1. Onset-strength envelope at a fine hop (~2.9 ms), peak-picked into a
      sparse list of onsets. For each onset we keep its full-band strength and
      its low-band (< 200 Hz, i.e. kick/bass) strength. That list is cached.
-  2. Coarse tempo from librosa (good at the neighbourhood, and sets the
-     octave — 62 vs 124 BPM).
+  2. Coarse tempo from librosa (good at the neighbourhood). Its *level* can
+     be wrong — an octave off, or locked onto a triplet pulse (Drake's
+     "Fancy": 117.5 for a real 87.55, a 4:3 error). When beat_this is
+     installed, its beat tempo picks the level: librosa's value × ½, ⅔, ¾,
+     1, 4⁄3, 3⁄2 or 2, whichever is nearest.
   3. Comb search over bpm within ±3% of the coarse value: fold onset times by
      the beat period and keep the (bpm, phase) whose folded energy is most
      concentrated. Binned (~1.5 ms), so neighbouring tempos tie.
@@ -47,14 +50,15 @@ import numpy as np
 
 from dj_segue.analyzer.downbeat import (
     BEATS_PER_BAR,
-    detect_downbeats,
+    beat_tempo,
+    detect_beats,
     downbeat_model_id,
     downbeat_offset,
 )
 from dj_segue.constants import ANCHOR_TOLERANCE
 
 ANALYZER_ID = (
-    f"segue-grid-2/librosa-{librosa.__version__}/{downbeat_model_id() or 'no-downbeats'}"
+    f"segue-grid-3/librosa-{librosa.__version__}/{downbeat_model_id() or 'no-downbeats'}"
 )
 
 HOP = 128  # ~2.9 ms at 44.1 kHz
@@ -122,8 +126,10 @@ def analyze_audio(audio_path: Path) -> BeatAnalysis:
     if len(times) >= MIN_ONSETS:
         coarse = float(np.atleast_1d(librosa.feature.tempo(y=y, sr=sr))[0])
         if coarse > 0:
+            found = detect_beats(y, sr)
+            beats, downbeats = found if found is not None else (None, None)
+            coarse = pick_tempo_level(coarse, beat_tempo(beats))
             detected_bpm, anchor = fit_grid(times, weights, low, coarse)
-            downbeats = detect_downbeats(y, sr)
     return BeatAnalysis(
         detected_bpm=detected_bpm,
         grid_anchor_sec=anchor,
@@ -158,6 +164,22 @@ def detect_onsets(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, np.nd
     # n-1); shift back one hop. Measured on synthetic clicks: +2.7 ms → ~0.
     times = (peaks - 1) * HOP / sr
     return times.astype(np.float64), env[peaks].astype(np.float64), low.astype(np.float64)
+
+
+# Ratios between librosa's tempo and the real one that we correct: octave
+# errors, and the 3:4 / 2:3 errors of locking onto a triplet or dotted pulse.
+TEMPO_RATIOS = (1.0, 0.5, 2.0, 0.75, 4 / 3, 2 / 3, 1.5)
+
+
+def pick_tempo_level(coarse_bpm: float, reference_bpm: float | None) -> float:
+    """`coarse_bpm` times whichever of TEMPO_RATIOS lands nearest (in log
+    tempo) to `reference_bpm` (beat_this's tempo); unchanged without one."""
+    if reference_bpm is None:
+        return coarse_bpm
+    return min(
+        (coarse_bpm * r for r in TEMPO_RATIOS),
+        key=lambda bpm: abs(np.log(bpm / reference_bpm)),
+    )
 
 
 def fit_grid(
