@@ -182,4 +182,4 @@ Python 3.11+. We use match statements, `typing.Self`, modern type hints througho
 
 ## Open questions (revisit before locking)
 
-None right now. As things come up during implementation, list them here with proposed resolutions before changing settled decisions.
+**Real-time rendering (raised 2026-09-30).** Goal: compute audio a few hundred ms ahead of the playhead so tempo, curves and positions can change during playback. Proposed shape: a block-based engine used for both live and offline rendering (so they stay byte-identical), the Rubber Band library in streaming mode instead of the CLI, a render thread filling the lock-free ring buffer, and a tempo map in `time_math` in place of a single mix tempo. Next step: a spike to check streaming stretch quality and determinism, and whether Python can keep the buffer full without dropouts. Settled decisions unaffected: score-style plans, deterministic compile, lock-free callback, headless rendering.

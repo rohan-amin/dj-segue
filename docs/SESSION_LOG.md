@@ -270,3 +270,56 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Section boundaries are reliable; labels aren't. Breaks (short bass dropouts) are the best entry-point markers — OMT's 184–192 break is where the user's ear landed.
 - Browser checks: audio stays suspended until a real click/key (script calls don't count), and background tabs throttle timers to ~1 s — don't mistake that for a timing bug.
 - A structure `energy` strip needs a tighter dB range (12) than bass (30) to be readable.
+
+---
+
+## Session: 2026-09-30 (transition curves, schema v0.4/v0.5, Fancy mix, tune page T1 + T3)
+
+**Milestone:** M4.5 — Tune (new; T1 and T3 done). Also schema v0.4 and v0.5, engine and analyzer fixes.
+**Duration:** approximately 60 turns
+**Worked on:** Shapeable crossfades (presets, per-side windows, drawn curves); a new real-music mix (Fancy → Like 'em All) that exposed a tempo-detection bug and a jump click; a browser page to tune transitions by ear; render speed.
+
+### Roadmap changes (decided with user 2026-09-30)
+- New **M4.5 "Tune"** (docs/milestones.md): a local page to adjust transitions, jump points and loop points by ear. Save edits the plan **in place** (only changed keys; comments kept). Curves can be **drawn freehand**. Phases T1–T6; T1 and T3 done.
+- User: "eventually we need to move to real-time rendering". Proposed (not yet decided): a short real-time **spike** before T2/T4/T5 (Rubber Band library streaming from Python, block engine + ring buffer, live == offline output). See *Open questions*.
+- The "easy mode vs M3" question from last session wasn't answered; the user steered to tuning tools instead.
+
+### Completed
+- **Schema v0.4:** crossfade `curve` (equal_power | linear | exponential) and per-side `out` / `in` overrides (`offset`, `duration`, `curve`). `time_math.transition_windows` is the single place a transition becomes two fade windows (used by compiler, validator, anchors, tune). A transition's `after` anchor = its later side's end. `starships_omt_slowin` ported to one transition (render byte-identical to the old lanes).
+- **Default mix tempo** = the first track *on the timeline* (was: first declared in `tracks`; doc and code disagreed). `tempo_track()`; Starships examples dropped their hard-coded 125.
+- **Jump seams:** back-to-back segments on a deck whose audio jumps now get the loop seam (3 ms crossfade ending on the boundary, pre-roll before the new `from`), like a quantized hot-cue jump. Plain continuations untouched. Found via an audible click in the Fancy jump.
+- **Tempo-level fix:** librosa's coarse tempo locked onto a triplet pulse on Drake's "Fancy" (117.45 for a real 87.55; confirmed by beat_this, bar spacing and online listings). beat_this's beat tempo (when steady) now picks librosa × {½, ⅔, ¾, 1, 4⁄3, 3⁄2, 2}. Other tracks unchanged. Analysis cache id → segue-grid-3.
+- **Mixes:** `examples/fancy_jump` (Fancy, 24-bar jump 112 → 208) and `examples/fancy_likeem` (that, into Like 'em All over 32 beats at Fancy +5% = 91.93 BPM; fade-in curve drawn by the user in tune). User: "really good".
+- **Engine split:** `render` = `render_decks` → `deck_gains` → `DeckRender.mix` (byte-identical).
+- **Stretch cache + parallel stretching:** results cached by hash of input samples, rate, SR, rubberband version (`<project>/.cache/stretch`, git-ignored; `DJ_SEGUE_STRETCH_CACHE` overrides, "off" disables). Segments stretch in parallel threads. Fancy mix: 25 s → 20 s cold, 0.8 s warm; output byte-identical.
+- **`dj-segue tune <plan>` (M4.5 T1):** lists the plan's crossfades; both decks' waveforms + gain curves; drag fade windows (beat snap, Alt ¼); preset curve per side; play/loop; Save in place via `schema/jsonc_edit.py`. Every edit goes through the real validator/compiler/engine, so the page plays exactly `render`'s samples (tested byte-identical). Edits that would move audio are refused (T2). Page opens at once with render progress.
+- **Schema v0.5 + T3 (drawn curves):** a side's `curve` may be `{points: [[t, gain], …], smooth}` (absolute gains, out 1→0 / in 0→1, points ≥ 2 ms apart, smooth = PCHIP). Page: pencil (D; Shift = straight line), stroke replaces the curve only where drawn, simplified with RDP at 2.5 px; drag points, double-click add/remove, smooth toggle. Saving bumps the plan's `schema_version`.
+
+### Tests
+- 261 passed, 0 failed (~45 s).
+- New: test_v04_transitions, test_v05_curves, test_jsonc_edit, test_tune, test_stretch_cache; additions to test_m4_loops (jump seam), test_m26_grid (tempo level), test_validator (default tempo track).
+- The tune page's JS isn't unit-tested; checked in Chrome (drag, curves, draw, point edit, save, refusal, progress) and with `node --check`.
+
+### Schema or interface changes
+- **Schema v0.4** and **v0.5** (both additive). Docs: `docs/schema-v0.4.md`, `docs/schema-v0.5.md`.
+- Internal: `transition_windows`/`FadeWindow`; `compiler.Points` ramp shape; `NativeEngine.render_decks(…, on_progress)` / `deck_gains` / `DeckRender`; `tempo_track()`; `analyzer.downbeat.detect_beats` / `beat_tempo` (replaced `detect_downbeats`); `beat.pick_tempo_level`.
+
+### Dependencies added/removed
+- none (scipy, already present via librosa, now used directly for PCHIP).
+
+### Open questions
+- **Real-time rendering** (user wants it eventually). Proposed: spike first — Rubber Band library streaming (quality vs R3 `--fine`, run-to-run determinism, ratio changes mid-stream), Python block engine filling a ring buffer, live == offline byte-identical; tempo map in `time_math`. Then decide whether T2/T4/T5 build on it. Recorded in `docs/architecture.md` → Open questions (approved).
+- Optional: chunked parallel stretching for faster first renders (needs a listening test at chunk joins).
+- Small: clearer transition labels in the tune dropdown (track names / beat / id).
+
+### Next session should
+- Decide: real-time spike vs. continuing M4.5 (T2 move segments, T4 jump points, T5 loop points, T6 A/B).
+- M5 still owes the master limiter (renders clip).
+
+### Notes for future sessions
+- The tune server reads `page.html` once at startup — restart it after editing the page (cost a debugging round this session).
+- Pointer-capture drags can't be scripted with the click tool beyond a straight line; dispatch `PointerEvent`s from JS for freehand strokes, but do real clicks for playback (audio needs a user gesture).
+- Simplify drawn strokes in **pixels**, not normalized units (sub-pixel tolerance kept every wobble). When merging a simplified stroke, take the covered time range from the **raw** stroke.
+- A beat grid that looks "right" in `scrub` can still be the wrong tempo (Fancy at 116.7 felt fine because the user picked positions on the same wrong grid). Cross-check unusual tempos with beat_this / online listings.
+- Jump points picked on a wrong grid convert by seconds, then round to real downbeats (Fancy 149 → 277 became 112 → 208).
+- Stretch time depends on content, not just length (Like 'em All: ~0.077 s per second of audio vs Fancy's ~0.036).
