@@ -28,6 +28,10 @@ crossfader gain (decks 1–2 only). All come from dj_segue.compiler.
 
 from __future__ import annotations
 
+import os
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +40,7 @@ import soundfile as sf
 
 from dj_segue.compiler import (
     Span,
+    Timeline,
     crossfader_envelope,
     crossfader_gains,
     deck_volume_envelopes,
@@ -57,6 +62,25 @@ from dj_segue.time_math import TrackGrid
 
 # Loop / jump seam crossfade length (seconds of mix time).
 LOOP_SEAM_SEC = 0.003
+
+
+@dataclass(frozen=True)
+class DeckRender:
+    """Each deck's audio before gain, on the mix's sample clock."""
+
+    decks: dict[int, np.ndarray]  # deck → (total_samples, 2) float32
+    sample_rate: int
+    total_samples: int
+    mix_tempo: float
+    timeline: Timeline
+
+    def mix(self, gains: dict[int, np.ndarray], start: int = 0, end: int | None = None) -> np.ndarray:
+        """Sum of the decks times their gains over samples [start, end)."""
+        end = self.total_samples if end is None else end
+        out = np.zeros((end - start, 2), dtype=np.float32)
+        for deck, buf in self.decks.items():
+            out += buf[start:end] * gains[deck][start:end, None]
+        return out
 
 
 @dataclass(frozen=True)
@@ -82,6 +106,30 @@ class NativeEngine(MixExecutor):
         audio_root: Path,
         grids: dict[str, TrackGrid] | None = None,
     ) -> RenderResult:
+        parts = self.render_decks(plan, audio_root, grids)
+        if not parts.decks:
+            return RenderResult(
+                samples=np.zeros((0, 2), dtype=np.float32),
+                sample_rate=parts.sample_rate,
+            )
+        gains = self.deck_gains(plan, parts)
+        return RenderResult(samples=parts.mix(gains), sample_rate=parts.sample_rate)
+
+    def render_decks(
+        self,
+        plan: Plan,
+        audio_root: Path,
+        grids: dict[str, TrackGrid] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> "DeckRender":
+        """Each deck's audio before gain (volume, transitions, crossfader).
+
+        `on_progress(done, total)` is called as segments finish (from worker
+        threads).
+
+        `render` = `render_decks` → `deck_gains` → `DeckRender.mix`; the tune
+        page uses the same steps so it plays exactly what `render` produces.
+        """
         self._check_supported(plan)
         audio_root = Path(audio_root).resolve()
         track_audio, sample_rate = self._load_all_tracks(plan, audio_root)
@@ -94,42 +142,70 @@ class NativeEngine(MixExecutor):
 
         timeline = resolve_timeline(plan, mix_tempo, grids)
         compiled = self._compile_play_segments(timeline.spans, sample_rate)
-        if not compiled:
-            return RenderResult(
-                samples=np.zeros((0, 2), dtype=np.float32),
-                sample_rate=sample_rate,
-            )
+        total_samples = max((c.mix_end_sample for c in compiled), default=0)
 
-        total_samples = max(c.mix_end_sample for c in compiled)
-
-        deck_buffers: dict[int, np.ndarray] = {}
+        # Seams first (they depend on each deck's previous segment), then all
+        # segments' audio at once — stretching runs in rubberband processes,
+        # so threads overlap them — then assemble in order.
         seam = int(round(LOOP_SEAM_SEC * sample_rate))
+        ordered = sorted(compiled, key=lambda c: (c.deck, c.mix_start_sample))
+        leads: list[int] = []
         prev_on_deck: dict[int, _CompiledPlay] = {}
-        for c in sorted(compiled, key=lambda c: (c.deck, c.mix_start_sample)):
-            buf = deck_buffers.setdefault(
-                c.deck, np.zeros((total_samples, 2), dtype=np.float32)
-            )
-            n = c.mix_end_sample - c.mix_start_sample
+        for c in ordered:
             prev = prev_on_deck.get(c.deck)
             prev_on_deck[c.deck] = c
             lead = 0
             if prev is not None and _needs_seam(prev, c):
+                n = c.mix_end_sample - c.mix_start_sample
                 lead = min(seam, n, prev.mix_end_sample - prev.mix_start_sample)
+            leads.append(lead)
+
+        done = 0
+        if on_progress is not None:
+            on_progress(0, len(ordered))
+
+        def segment(job: tuple[_CompiledPlay, int]) -> np.ndarray:
+            nonlocal done
+            c, lead = job
+            audio = self._segment_audio(
+                track_audio[c.track_id], c, c.mix_end_sample - c.mix_start_sample,
+                sample_rate, lead,
+            )
+            if on_progress is not None:
+                with progress_lock:
+                    done += 1
+                    on_progress(done, len(ordered))
+            return audio
+
+        progress_lock = threading.Lock()
+        with ThreadPoolExecutor(max_workers=max(1, os.cpu_count() or 1)) as pool:
+            audios = list(pool.map(segment, zip(ordered, leads)))
+
+        deck_buffers: dict[int, np.ndarray] = {}
+        for c, lead, audio in zip(ordered, leads, audios):
+            buf = deck_buffers.setdefault(
+                c.deck, np.zeros((total_samples, 2), dtype=np.float32)
+            )
+            if lead:
                 buf[c.mix_start_sample - lead : c.mix_start_sample] *= _ramp(
                     lead, rising=False
                 )[:, None]
-            buf[c.mix_start_sample - lead : c.mix_end_sample] += self._segment_audio(
-                track_audio[c.track_id], c, n, sample_rate, lead
-            )
+            buf[c.mix_start_sample - lead : c.mix_end_sample] += audio
+        return DeckRender(deck_buffers, sample_rate, total_samples, mix_tempo, timeline)
 
-        gains = self._deck_gains(
-            plan, list(deck_buffers), mix_tempo, sample_rate, total_samples, timeline.anchors
+    def deck_gains(
+        self, plan: Plan, parts: "DeckRender", anchors: dict[str, float] | None = None
+    ) -> dict[int, np.ndarray]:
+        """Per-sample gain for each of `parts`' decks under `plan`'s
+        transitions and automation. `anchors` defaults to `parts`' own."""
+        return self._deck_gains(
+            plan,
+            list(parts.decks),
+            parts.mix_tempo,
+            parts.sample_rate,
+            parts.total_samples,
+            parts.timeline.anchors if anchors is None else anchors,
         )
-        for deck, buf in deck_buffers.items():
-            buf *= gains[deck][:, None]
-
-        mix = np.sum(list(deck_buffers.values()), axis=0).astype(np.float32)
-        return RenderResult(samples=mix, sample_rate=sample_rate)
 
     def render_to_wav(
         self,

@@ -13,6 +13,9 @@ venv/
 .idea/
 .vscode/
 
+# Time-stretch cache (large; regenerated on demand)
+/.cache/
+
 # Preprocessor caches (sidecar files next to audio)
 *.beats
 *.cue

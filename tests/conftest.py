@@ -10,6 +10,16 @@ import pytest
 import soundfile as sf
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _stretch_cache_in_tmp(tmp_path_factory):
+    """Keep test stretches out of the user's ~/.cache."""
+    mp = pytest.MonkeyPatch()
+    mp.setenv("DJ_SEGUE_STRETCH_CACHE", str(tmp_path_factory.mktemp("stretch-cache")))
+    yield
+    mp.undo()
+
 EXAMPLE_PLAN = REPO_ROOT / "examples" / "hello_mix.plan.jsonc"
 SR = 44100
 
