@@ -323,3 +323,39 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - A beat grid that looks "right" in `scrub` can still be the wrong tempo (Fancy at 116.7 felt fine because the user picked positions on the same wrong grid). Cross-check unusual tempos with beat_this / online listings.
 - Jump points picked on a wrong grid convert by seconds, then round to real downbeats (Fancy 149 → 277 became 112 → 208).
 - Stretch time depends on content, not just length (Like 'em All: ~0.077 s per second of audio vs Fancy's ~0.036).
+
+---
+
+## Session: 2026-09-30 (late: drawn-curve render, Bottoms Up plan, echo out planned)
+
+**Milestone:** M4.5 — Tune (testing with a new mix; no code changes)
+**Duration:** approximately 10 turns
+**Worked on:** Rendering the drawn-curve Fancy → Like 'em All mix; setting up a three-song plan to shape Like 'em All → Bottoms Up in `tune`; echo out added to M5.
+
+### Completed
+- Rendered `examples/fancy_likeem.plan.jsonc` (with the drawn fade-in) to `audio/fancy_likeem_drawn.wav` (6:18.76; 0.75 s, stretch cache warm). The earlier `fancy_likeem_fast.wav` predates the drawn curve.
+- New plan `examples/fancy_likeem_bottomsup.plan.jsonc`: fancy_likeem with Like 'em All ending at its beat 160 (`id: likeem_end`), Bottoms Up on deck 3 from its beat 0 to 296, starting 32 beats before `likeem_end`; a placeholder 32-beat equal-power crossfade for the user to shape in `tune`. Validates; all three tracks analyzed.
+- Bottoms Up analyzed: detected 148.000 (double-time), beat 0 @ 93 ms. Plan declares `bpm: 74`. Mix stays 91.93, so Bottoms Up plays ~24% fast (user's choice over a non-beatmatched short blend or a ~83 BPM compromise).
+- `docs/milestones.md`: **echo out** added to M5 (beat-synced delay with feedback, dry cut on a downbeat, decaying tail, optional high-pass sweep; likely `"style": "echo_out"` in a new schema version) with an acceptance case (Like 'em All echoes out into Bottoms Up at native tempo). Removed delay from "Beyond M7".
+
+### Tests
+- 261 passed, 0 failed (~44 s). No code changes.
+
+### Schema or interface changes
+- none
+
+### Dependencies added/removed
+- none
+
+### Open questions
+- The user hasn't shaped (or saved) the Like 'em All → Bottoms Up transition yet; the plan still has the placeholder crossfade. Bottoms Up at +24% may sound rushed — revisit after listening (echo out in M5 would allow native tempo).
+- Carried over: real-time spike vs. continuing M4.5 (T2/T4/T5/T6).
+
+### Next session should
+- Ask whether the user shaped/saved the Bottoms Up transition in `tune`; render it (`dj-segue play <plan> --render-to <wav>`) and commit the plan.
+- Then decide real-time spike vs. M4.5 T2 (T2 would let the page lengthen the 32-beat overlap).
+
+### Notes for future sessions
+- The render command is `dj-segue play <plan> --render-to <file.wav>`; there is no `render` subcommand.
+- Bottoms Up is another wrong tempo level (148 vs. the usual 74), like Fancy — beat_this agreed with the double level here, so `pick_tempo_level` didn't help. Watch for hip-hop tracks detected at 2×.
+- Without a declared `bpm`, a too-high detected level would make `target_bpm: "mix"` slow a track down instead of speeding it up — always check the level before beatmatching.

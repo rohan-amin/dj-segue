@@ -1,0 +1,67 @@
+// examples/fancy_likeem_bottomsup.plan.jsonc
+//
+// fancy_likeem, extended: Like 'em All now ends at its beat 160 and hands
+// over to Bottoms Up from the top. Needs your own copies of the tracks in
+// the git-ignored audio/ folder.
+//
+//   - Fancy and the Fancy → Like 'em All blend are unchanged from
+//     fancy_likeem (jump 112 → 208, drawn 32-beat fade-in).
+//   - Bottoms Up starts at its beat 0 (first downbeat) 32 beats before Like
+//     'em All ends; the crossfade is a placeholder covering that whole
+//     overlap — shape it in `dj-segue tune`.
+//   - Bottoms Up declares bpm 74: detection reads it at the double-time
+//     level (148), which would make "mix" slow it down instead of speeding
+//     it up. At 91.93 BPM it plays about 24% fast.
+
+{
+  "schema_version": "0.5",
+
+  "meta": {
+    "mix_name": "Fancy into Like 'em All into Bottoms Up",
+    "source_prompt": "End Like 'em All at beat 160 and transition into Bottoms Up from the beginning",
+    "mix_tempo": 91.93
+  },
+
+  "tracks": {
+    "fancy":     { "path": "audio/07 - Fancy [feat. T.I., Swizz Beatz] [Explicit].mp3" },
+    "likeem":    { "path": "audio/01 - Like 'em All (Radio Version).mp3" },
+    "bottomsup": { "path": "audio/05 - Bottoms Up (feat. Nicki Minaj) [Explicit].mp3", "bpm": 74 }
+  },
+
+  "decks": {
+    "1": { "label": "fancy" },
+    "2": { "label": "likeem" },
+    "3": { "label": "bottomsup" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "fancy",
+      "from": { "second": 0 }, "to": { "beat": 112 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "fancy_end", "deck": 1, "track": "fancy",
+      "from": { "beat": 208 }, "to": { "beat": 336 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "likeem_end", "deck": 2, "track": "likeem",
+      "from": { "beat": 0 }, "to": { "beat": 160 },
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "duration": { "beats": 32 },
+      "in": { "curve": { "points": [[0, 0], [0.1263, 0.0483], [0.2339, 0.065], [0.4776, 0.1004], [0.5315, 0.7216], [0.625, 0.8316], [0.75, 0.924], [0.875, 0.9808], [1, 1]] } } },
+
+    { "type": "play", "deck": 3, "track": "bottomsup",
+      "from": { "beat": 0 }, "to": { "beat": 296 },
+      "start_at": { "after": "likeem_end", "offset": { "beats": -32 } },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 2, "to_deck": 3,
+      "start_at": { "after": "likeem_end", "offset": { "beats": -32 } },
+      "duration": { "beats": 32 } }
+  ]
+}
