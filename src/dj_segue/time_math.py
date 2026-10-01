@@ -151,7 +151,9 @@ class FadeWindow:
 
     start_sec: float
     end_sec: float
-    curve: str  # a ramp shape: "equal_power" | "linear" | "exponential" | "step"
+    # A ramp shape name ("equal_power" | "linear" | "exponential" | "step"),
+    # or a drawn schema PointCurve (v0.5).
+    curve: Any
 
 
 def transition_windows(

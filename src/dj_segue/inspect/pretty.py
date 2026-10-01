@@ -155,6 +155,14 @@ def _write_timeline(
     out.write("\n")
 
 
+def _fmt_curve(curve) -> str:
+    """A curve name, or a drawn curve summarized (v0.5)."""
+    if isinstance(curve, str):
+        return curve
+    kind = "smooth" if curve.smooth else "straight"
+    return f"drawn: {len(curve.points)} points, {kind}"
+
+
 def _fmt_side(side) -> str:
     parts = []
     if side.offset is not None:
@@ -162,7 +170,7 @@ def _fmt_side(side) -> str:
     if side.duration is not None:
         parts.append(f"duration {_fmt_duration(side.duration)}")
     if side.curve is not None:
-        parts.append(side.curve)
+        parts.append(_fmt_curve(side.curve))
     return ", ".join(parts)
 
 
@@ -202,7 +210,7 @@ def _write_transition_expansion(
             b2 = r.end_sec * beats_per_sec
             span = f"beat {b1:g}" if b1 == b2 else f"beat {b1:g} → {b2:g}"
             out.write(
-                f"        {span}: {r.start_value:g} → {r.end_value:g}  ({r.shape})\n"
+                f"        {span}: {r.start_value:g} → {r.end_value:g}  ({_fmt_curve(r.shape)})\n"
             )
     out.write("\n")
 

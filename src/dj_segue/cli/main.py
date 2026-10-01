@@ -163,5 +163,35 @@ def scrub(
         typer.echo("marked beats: " + ", ".join(str(m) for m in marks))
 
 
+@app.command()
+def tune(
+    plan_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    audio_root: Path = typer.Option(
+        Path("."),
+        "--audio-root",
+        help="Base directory for resolving relative audio paths in the plan.",
+    ),
+    port: int = typer.Option(0, "--port", help="Port to serve on (default: any free port)."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open a browser."),
+) -> None:
+    """Open a plan's transitions in the browser to adjust fade windows and
+    curves by ear; Save writes the changes into the plan in place."""
+    from dj_segue.tune import TuneSession, serve
+
+    plan = _load_or_die(plan_path)
+    if not any(
+        getattr(seg, "type", None) == "transition" and seg.style == "crossfade"
+        for seg in plan.timeline
+    ):
+        typer.echo("no crossfade transitions in this plan", err=True)
+        raise typer.Exit(code=1)
+    try:
+        session = TuneSession(plan_path, audio_root)
+    except (PlanValidationError, TempoNotDetectedError, ValueError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+    serve(session, port, open_browser=not no_browser)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()

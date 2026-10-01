@@ -98,14 +98,14 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ### Phases
 
-**T1 — Transitions, preset curves.**
+**T1 — Transitions, preset curves.**  (DONE 2026-09-30)
 - Windowed render in the engine (`render(..., window=(a, b))`: compile only the spans that overlap the window) and per-deck pre-gain audio for the region.
 - Page: waveforms, beat grid, drawn gain curves; drag out/in window edges (snap to beat; ½/¼ with a modifier); preset curve per side; play from N beats before / loop the region; beat readout.
 - In-place JSONC save (position-tracking scanner over the plan text; field-level replace/insert/delete).
 
 **T2 — Windows that move audio.** Dragging a window past the current overlap moves the incoming segment's `start_at` (and `to` of the outgoing one if needed) → region re-render. The page lists later segments with absolute `start_at` that won't follow the change (suggests `after`).
 
-**T3 — Freehand curves (schema v0.5).**
+**T3 — Freehand curves (schema v0.5).**  (DONE 2026-09-30)
 - `curve` may be `{ "points": [[t, gain], …], "smooth": bool }`: t and gain in 0–1 across that side's window; t strictly increasing; an `in` curve starts at 0 and ends at 1, an `out` curve 1 → 0. `smooth: false` → straight lines; `true` → monotone cubic (PCHIP: smooth, never overshoots past its points, so gain stays in 0–1).
 - Gains may go up and down inside the window (swells, dips, gated chops). Segments steeper than 2 ms get a 2 ms ramp so nothing clicks.
 - Page: pencil — press and drag to paint over the window (the stroke replaces the curve under it, like DAW automation drawing); the stroke is simplified (Ramer–Douglas–Peucker) to a small point list that stays editable — drag/add/delete points; Shift draws straight lines; smooth toggle.

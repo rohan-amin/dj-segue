@@ -491,6 +491,10 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
     return issues
 
 
+# Closest two points of a drawn curve may be, in mix time (v0.5).
+MIN_POINT_GAP_SEC = 0.002
+
+
 def _check_transitions(
     plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None = None
 ) -> list[str]:
@@ -530,6 +534,17 @@ def _check_transitions(
             for name, w in (("out", out_w), ("in", in_w)):
                 if w.end_sec - w.start_sec <= 0:
                     issues.append(f"{label}: {name} fade duration must be positive")
+                elif not isinstance(w.curve, str):
+                    # A drawn curve: a jump faster than MIN_POINT_GAP_SEC clicks.
+                    span = w.end_sec - w.start_sec
+                    ts = [t for t, _ in w.curve.points]
+                    gap = min(b - a for a, b in zip(ts, ts[1:])) * span
+                    if gap < MIN_POINT_GAP_SEC - 1e-9:
+                        issues.append(
+                            f"{label}: drawn {name} curve has points {gap * 1000:.2f} ms "
+                            f"apart; keep them at least {MIN_POINT_GAP_SEC * 1000:g} ms "
+                            f"apart so the volume can't jump (a click)"
+                        )
         per_deck.setdefault(seg.from_deck, []).append((out_w.start_sec, out_w.end_sec, -1, label))
         per_deck.setdefault(seg.to_deck, []).append((in_w.start_sec, in_w.end_sec, +1, label))
 

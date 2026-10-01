@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tune</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dcdad4;
+    --wave: #c9c6bd; --wave-on: #3d3b36; --accent: #2f6fdb; --out: #d9542b; --in: #2f6fdb;
+    --win: rgba(47, 111, 219, 0.08); --nodeck: rgba(0, 0, 0, 0.05); --bad: #c0392b;
+    --btn: #eeece7; --btn-on: #1d1d1b; --btn-on-ink: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1e1e1c; --ink: #ecebe6; --muted: #9a988f; --line: #34332f;
+      --wave: #4a4944; --wave-on: #d8d6cf; --accent: #6ea0ff; --out: #ef7a52; --in: #6ea0ff;
+      --win: rgba(110, 160, 255, 0.10); --nodeck: rgba(255, 255, 255, 0.04); --bad: #ff6b5b;
+      --btn: #2a2a27; --btn-on: #ecebe6; --btn-on-ink: #151514;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .meta, #status { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  canvas { display: block; width: 100%; height: 330px; touch-action: none; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button, select { font: inherit; border: 0; background: var(--btn); color: var(--ink); border-radius: 7px;
+                   padding: 8px 11px; cursor: pointer; }
+  button:hover { filter: brightness(0.95); }
+  button:disabled { opacity: 0.45; cursor: default; filter: none; }
+  button.on { background: var(--btn-on); color: var(--btn-on-ink); }
+  button.play { min-width: 110px; font-weight: 600; background: var(--accent); color: #fff; }
+  .sides { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .side h2 { font-size: 14px; margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+  .side h2 i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  .nums { font-variant-numeric: tabular-nums; color: var(--muted); margin-bottom: 8px; }
+  .nums b { color: var(--ink); font-weight: 600; }
+  pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  #issues { color: var(--bad); }
+  .bar { height: 6px; border-radius: 3px; background: var(--btn); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+  .keys { color: var(--muted); font-size: 12px; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Loading…</h1>
+    <select id="pick" aria-label="Transition"></select>
+    <span id="status"></span>
+  </header>
+
+  <div class="panel" id="loading">
+    <div class="label"><span id="loadtext">Rendering the decks…</span></div>
+    <div class="bar"><i id="loadbar"></i></div>
+  </div>
+
+  <div class="panel">
+    <div class="label">
+      <span>Beats count from the blend's start. Drag a window's edges, or its middle to move it.
+        <button id="pencil" title="Draw a curve (D)">✎ Draw</button></span>
+      <span class="keys"><kbd>Space</kbd> play/stop · <kbd>Alt</kbd>-drag snaps to ¼ beat · click the ruler to set the cursor<br>
+        <kbd>D</kbd> draw: paint over a fade, <kbd>Shift</kbd> for a straight line · drawn curves: drag points, double-click to add or remove one</span>
+    </div>
+    <canvas id="view"></canvas>
+  </div>
+
+  <div class="panel controls">
+    <button class="play" id="playBlend">▶ Blend</button>
+    <button id="playCursor">▶ From cursor</button>
+    <button id="stop">■ Stop</button>
+    <button id="loop">Loop blend</button>
+    <span id="pos" class="nums"></span>
+  </div>
+
+  <div class="panel sides">
+    <div class="side" id="side-out"></div>
+    <div class="side" id="side-in"></div>
+  </div>
+
+  <div class="panel">
+    <div class="label"><span>Changes to save into the plan</span>
+      <span class="controls"><button id="revert">Revert</button><button id="save" class="play" disabled>Save</button></span>
+    </div>
+    <pre id="changes">(none)</pre>
+    <pre id="issues"></pre>
+  </div>
+</main>
+
+<script>
+"use strict";
+const CURVES = [["equal_power", "Equal power"], ["linear", "Linear"], ["exponential", "Exponential"], ["drawn", "Drawn"]];
+const MIN_GAP_SEC = 0.0021;   // drawn points stay ≥ 2 ms apart (the validator's rule)
+const SIMPLIFY_PX = 2.5;     // drop stroke points within this many pixels of the line
+const $ = (id) => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d");
+
+let item = null;          // /item response
+let state = null;         // {out:{start,end,curve}, in:{…}} — mix seconds
+let good = null;          // last state the server accepted
+let gains = null, gainRate = 100;
+let changes = {};
+let audioCtx = null, buffer = null, source = null, playStartCtx = 0, playStartPos = 0, looping = false;
+let cursor = 0;           // seconds into the region
+let drag = null, previewSeq = 0;
+let pencil = false;       // draw mode
+let stroke = null;        // {side, pts: [[t, g]…], shift, t0g0} while drawing
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// -- geometry ---------------------------------------------------------------
+const RULER = 26, GAP = 10;
+function lanes() {
+  const h = canvas.clientHeight, laneH = (h - RULER - GAP) / 2;
+  return [{ top: RULER, h: laneH }, { top: RULER + laneH + GAP, h: laneH }];
+}
+const dur = () => item.end_sec - item.start_sec;
+const xOf = (t) => (t - item.start_sec) / dur() * canvas.clientWidth;
+const tOf = (x) => item.start_sec + x / canvas.clientWidth * dur();
+const beatOf = (t) => (t - item.zero_sec) / item.spb;
+const fmtBeat = (t) => { const b = Math.round(beatOf(t) * 100) / 100; return (b > 0 ? "+" : "") + b; };
+const blendStart = () => Math.min(state.out.start, state.in.start);
+const blendEnd = () => Math.max(state.out.end, state.in.end);
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const laneOf = (side) => lanes()[side === "out" ? 0 : 1];
+const deckOf = (side) => item.decks[side === "out" ? 0 : 1];
+const gOfY = (lane, y) => clamp01(1 - (y - lane.top - 2) / (lane.h - 4));
+const yOfG = (lane, g) => lane.top + 2 + (1 - g) * (lane.h - 4);
+// Normalized time across a side's fade window ↔ mix seconds.
+const winT = (side, t) => (t - state[side].start) / (state[side].end - state[side].start);
+const winSec = (side, u) => state[side].start + u * (state[side].end - state[side].start);
+
+// -- drawn curves -----------------------------------------------------------
+const isDrawn = (c) => typeof c === "object";
+const ends = (side) => (side === "out" ? [1, 0] : [0, 1]);
+
+// The side's current curve as points, read from the server's real gains (so a
+// preset converts exactly as it sounds, without re-implementing its maths).
+function asPoints(side, n = 9) {
+  const c = state[side].curve;
+  if (isDrawn(c)) return c.points.map((p) => [...p]);
+  const g = gains[String(deckOf(side).deck)], [g0, g1] = ends(side), pts = [];
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    const k = Math.round((winSec(side, u) - item.start_sec) * gainRate);
+    pts.push([u, i === 0 ? g0 : i === n - 1 ? g1 : clamp01(g[Math.min(g.length - 1, Math.max(0, k))])]);
+  }
+  return pts;
+}
+
+// Ramer–Douglas–Peucker: drop points that sit within `eps` of the line
+// between their neighbours.
+function simplify(pts, eps) {
+  if (pts.length < 3) return pts;
+  const [a, b] = [pts[0], pts[pts.length - 1]];
+  let worst = 0, at = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [x, y] = pts[i];
+    const d = Math.abs((b[1] - a[1]) * x - (b[0] - a[0]) * y + b[0] * a[1] - b[1] * a[0]) /
+      Math.hypot(b[1] - a[1], b[0] - a[0]);
+    if (d > worst) { worst = d; at = i; }
+  }
+  if (worst <= eps) return [a, b];
+  return simplify(pts.slice(0, at + 1), eps).slice(0, -1).concat(simplify(pts.slice(at), eps));
+}
+
+// Tidy a point list into a valid drawn curve: sorted, endpoints fixed, gaps
+// at least MIN_GAP_SEC, values rounded.
+function tidy(side, pts) {
+  const [g0, g1] = ends(side), len = state[side].end - state[side].start;
+  const minGap = MIN_GAP_SEC / len;
+  pts = pts.filter(([u]) => u > 0 && u < 1).sort((p, q) => p[0] - q[0]);
+  const out = [[0, g0]];
+  for (const [u, g] of pts) {
+    if (u - out[out.length - 1][0] >= minGap && 1 - u >= minGap) out.push([u, clamp01(g)]);
+  }
+  out.push([1, g1]);
+  return out.map(([u, g]) => [Math.round(u * 1e4) / 1e4, Math.round(g * 1e4) / 1e4]);
+}
+
+function setDrawn(side, pts) {
+  const smooth = isDrawn(state[side].curve) && !!state[side].curve.smooth;
+  state[side].curve = { points: tidy(side, pts), smooth };
+}
+
+// Piecewise-linear value of a point list (display only, while editing).
+function pointsAt(pts, u) {
+  for (let i = 1; i < pts.length; i++) {
+    if (u <= pts[i][0]) {
+      const [u0, g0] = pts[i - 1], [u1, g1] = pts[i];
+      return g0 + (g1 - g0) * (u - u0) / (u1 - u0);
+    }
+  }
+  return pts[pts.length - 1][1];
+}
+
+// -- drawing ----------------------------------------------------------------
+function draw() {
+  if (!item) return;
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // Beat grid + ruler.
+  const first = Math.ceil(beatOf(item.start_sec)), last = Math.floor(beatOf(item.end_sec));
+  ctx.font = "11px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let b = first; b <= last; b++) {
+    const x = xOf(item.zero_sec + b * item.spb), bar = b % 4 === 0;
+    ctx.fillStyle = css("--line");
+    ctx.globalAlpha = bar ? 1 : 0.5;
+    ctx.fillRect(Math.round(x), RULER - (bar ? 8 : 4), 1, h);
+    ctx.globalAlpha = 1;
+    if (bar) { ctx.fillStyle = css("--muted"); ctx.fillText(String(b), x, 9); }
+  }
+
+  lanes().forEach((lane, i) => drawLane(lane, item.decks[i], i === 0 ? "out" : "in"));
+
+  // Cursor and playhead.
+  ctx.fillStyle = css("--muted");
+  ctx.fillRect(Math.round(xOf(item.start_sec + cursor)), RULER, 1, h - RULER);
+  if (source) {
+    ctx.fillStyle = css("--ink");
+    ctx.fillRect(Math.round(xOf(item.start_sec + position())) - 1, 0, 2, h);
+  }
+}
+
+function drawLane(lane, deck, side) {
+  const w = canvas.clientWidth, mid = lane.top + lane.h / 2, color = css(side === "out" ? "--out" : "--in");
+  const win = state[side];
+
+  // Where the deck isn't playing.
+  ctx.fillStyle = css("--nodeck");
+  let x0 = 0;
+  for (const p of deck.plays) { ctx.fillRect(x0, lane.top, xOf(p.start) - x0, lane.h); x0 = xOf(p.end); }
+  ctx.fillRect(x0, lane.top, w - x0, lane.h);
+
+  // Fade window.
+  ctx.fillStyle = css("--win");
+  ctx.fillRect(xOf(win.start), lane.top, xOf(win.end) - xOf(win.start), lane.h);
+
+  // Waveform: faint = the deck's audio, solid = after gain.
+  const peaks = deck.peaks, n = peaks.length, g = gains && gains[String(deck.deck)];
+  for (let px = 0; px < w; px++) {
+    const k = Math.min(n - 1, Math.floor(px / w * n)), a = Math.min(1, peaks[k]) * (lane.h / 2 - 4);
+    ctx.fillStyle = css("--wave"); ctx.fillRect(px, mid - a, 1, 2 * a);
+    if (g) {
+      const gi = Math.min(g.length - 1, Math.floor(px / w * g.length));
+      ctx.fillStyle = css("--wave-on"); ctx.fillRect(px, mid - a * g[gi], 1, 2 * a * g[gi]);
+    }
+  }
+
+  // Gain curve (top of lane = 1, bottom = 0).
+  if (g) {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    for (let px = 0; px <= w; px += 2) {
+      const gi = Math.min(g.length - 1, Math.floor(px / w * g.length));
+      const y = lane.top + 2 + (1 - g[gi]) * (lane.h - 4);
+      px ? ctx.lineTo(px, y) : ctx.moveTo(px, y);
+    }
+    ctx.stroke();
+  }
+
+  // Drawn curve: its points, and a live (straight-line) preview while editing.
+  const editing = (stroke && stroke.side === side) || (drag && drag.side === side && drag.edge === "point");
+  if (isDrawn(win.curve) || editing) {
+    const pts = stroke && stroke.side === side ? previewStroke() : isDrawn(win.curve) ? win.curve.points : null;
+    if (pts && editing) {
+      ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      pts.forEach(([u, g], i) => {
+        const x = xOf(winSec(side, u)), y = yOfG(lane, g);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.stroke(); ctx.restore();
+    }
+    if (pts && !stroke) {
+      for (const [u, g] of pts) {
+        ctx.beginPath(); ctx.arc(xOf(winSec(side, u)), yOfG(lane, g), 4.5, 0, 2 * Math.PI);
+        ctx.fillStyle = css("--panel"); ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.stroke();
+      }
+    }
+  }
+
+  // Handles.
+  for (const t of [win.start, win.end]) {
+    const x = xOf(t);
+    ctx.fillStyle = color; ctx.fillRect(x - 1.5, lane.top, 3, lane.h);
+    ctx.fillRect(x - 5, mid - 14, 10, 28);
+  }
+  ctx.fillStyle = css("--ink"); ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.font = "600 12px -apple-system, sans-serif";
+  ctx.fillText(`${side === "out" ? "Out" : "In"} · ${deck.label}`, 6, lane.top + 4);
+}
+
+// -- side panels ------------------------------------------------------------
+function renderSides() {
+  for (const side of ["out", "in"]) {
+    const deck = item.decks[side === "out" ? 0 : 1], win = state[side];
+    const el = $("side-" + side);
+    el.innerHTML = "";
+    const h2 = document.createElement("h2");
+    const sw = document.createElement("i"); sw.style.background = css(side === "out" ? "--out" : "--in");
+    h2.append(sw, `${side === "out" ? "Fade out" : "Fade in"} — ${deck.label}`);
+    const nums = document.createElement("div"); nums.className = "nums";
+    const len = Math.round((win.end - win.start) / item.spb * 100) / 100;
+    nums.innerHTML = `beat <b></b> → <b></b> · <b></b> beats`;
+    const bs = nums.querySelectorAll("b");
+    bs[0].textContent = fmtBeat(win.start); bs[1].textContent = fmtBeat(win.end); bs[2].textContent = String(len);
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", `${side} curve`);
+    for (const [v, label] of CURVES) {
+      const o = document.createElement("option"); o.value = v; o.textContent = label; sel.append(o);
+    }
+    sel.value = isDrawn(win.curve) ? "drawn" : win.curve;
+    sel.onchange = () => {
+      if (sel.value === "drawn") setDrawn(side, asPoints(side));  // starts as the current shape
+      else state[side].curve = sel.value;
+      requestPreview();
+    };
+    el.append(h2, nums, sel);
+    if (isDrawn(win.curve)) {
+      const lab = document.createElement("label");
+      lab.className = "nums"; lab.style.marginLeft = "10px";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!win.curve.smooth;
+      cb.onchange = () => { state[side].curve = { ...state[side].curve, smooth: cb.checked }; requestPreview(); };
+      lab.append(cb, " Smooth");
+      const n = document.createElement("span"); n.className = "nums";
+      n.textContent = ` · ${win.curve.points.length} points`;
+      el.append(lab, n);
+    }
+  }
+}
+
+// -- server -----------------------------------------------------------------
+async function loadItem(index) {
+  $("status").textContent = "loading…";
+  item = await (await fetch(`/item/${index}`)).json();
+  state = structuredClone(item.state);
+  good = structuredClone(state);
+  cursor = Math.max(0, blendStart() - 8 * item.spb - item.start_sec);
+  if (!audioCtx) audioCtx = new AudioContext({ sampleRate: item.sample_rate });
+  await requestPreview();
+}
+
+async function requestPreview() {
+  const seq = ++previewSeq;
+  renderSides(); draw();
+  $("status").textContent = "updating…";
+  const res = await (await fetch("/preview", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: item.index, state }),
+  })).json();
+  if (seq !== previewSeq) return;
+  if (!res.ok) {
+    $("issues").textContent = res.issues.join("\n");
+    state = structuredClone(good);
+    renderSides(); draw();
+    $("status").textContent = "";
+    return;
+  }
+  $("issues").textContent = "";
+  good = structuredClone(state);
+  gains = res.gains; gainRate = res.gain_rate;
+  changes = res.changes;
+  const keys = Object.keys(changes);
+  const lines = keys.map((k) => changes[k] === null ? `remove "${k}"` : `"${k}": ${JSON.stringify(changes[k])}`);
+  for (const [k, v] of Object.entries(res.plan_changes || {})) {
+    lines.push(`plan "${k}": ${JSON.stringify(v)}  (drawn curves need it)`);
+  }
+  $("changes").textContent = lines.length ? lines.join("\n") : "(none)";
+  $("save").disabled = keys.length === 0;
+  const data = await (await fetch(`/audio/${res.version}`)).arrayBuffer();
+  if (seq !== previewSeq) return;
+  const decoded = await audioCtx.decodeAudioData(data);
+  const wasPlaying = !!source, at = position();
+  buffer = decoded;
+  if (wasPlaying) play(at);
+  $("status").textContent = "";
+  draw();
+}
+
+async function save() {
+  $("status").textContent = "saving…";
+  const res = await (await fetch("/save", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index: item.index, state }),
+  })).json();
+  if (!res.ok) { $("issues").textContent = res.issues.join("\n"); $("status").textContent = ""; return; }
+  $("status").textContent = res.saved ? "saved ✓" : "nothing to save";
+  await loadItem(item.index);
+  $("status").textContent = res.saved ? "saved ✓" : "nothing to save";
+}
+
+// -- playback ---------------------------------------------------------------
+function position() {
+  if (!source) return cursor;
+  let p = playStartPos + (audioCtx.currentTime - playStartCtx);
+  if (looping && source.loop) {
+    const a = source.loopStart, b = source.loopEnd;
+    if (p > b) p = a + ((p - a) % (b - a));
+  }
+  return p;
+}
+
+function play(from) {
+  if (!buffer) return;
+  stop(false);
+  audioCtx.resume();
+  source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+  if (looping) {
+    source.loop = true;
+    source.loopStart = Math.max(0, blendStart() - 4 * item.spb - item.start_sec);
+    source.loopEnd = Math.min(buffer.duration, blendEnd() + 4 * item.spb - item.start_sec);
+    if (from < source.loopStart || from >= source.loopEnd) from = source.loopStart;
+  }
+  source.onended = () => { if (source && !source.loop) { source = null; draw(); } };
+  source.start(0, from);
+  playStartCtx = audioCtx.currentTime; playStartPos = from;
+  tick();
+}
+
+function stop(redraw = true) {
+  if (source) { source.onended = null; source.stop(); source = null; }
+  if (redraw) draw();
+}
+
+function tick() {
+  if (!source) return;
+  const p = position();
+  $("pos").textContent = `beat ${fmtBeat(item.start_sec + p)}`;
+  draw();
+  requestAnimationFrame(tick);
+}
+
+// -- dragging and drawing ---------------------------------------------------
+function sideAt(y) {
+  const ls = lanes();
+  for (let i = 0; i < 2; i++) {
+    if (y >= ls[i].top && y <= ls[i].top + ls[i].h) return i === 0 ? "out" : "in";
+  }
+  return null;
+}
+
+function hit(x, y) {
+  const side = sideAt(y);
+  if (!side) return null;
+  const win = state[side], lane = laneOf(side);
+  if (isDrawn(win.curve)) {
+    const pts = win.curve.points;
+    for (let i = 1; i < pts.length - 1; i++) {  // endpoints are fixed
+      const px = xOf(winSec(side, pts[i][0])), py = yOfG(lane, pts[i][1]);
+      if (Math.hypot(x - px, y - py) < 8) return { side, edge: "point", i };
+    }
+  }
+  if (Math.abs(x - xOf(win.start)) < 8) return { side, edge: "start" };
+  if (Math.abs(x - xOf(win.end)) < 8) return { side, edge: "end" };
+  if (x > xOf(win.start) && x < xOf(win.end)) return { side, edge: "move" };
+  return null;
+}
+
+// Stroke samples merged into the side's points: the stroke replaces the
+// curve over the time it covers (what releasing would give).
+// `pts` may be the simplified stroke; the time it covers is always the raw
+// stroke's (simplifying can drop its first and last samples).
+function previewStroke(pts = stroke.pts) {
+  const side = stroke.side, raw = stroke.pts;
+  if (raw.length < 2) return asPoints(side);
+  const lo = Math.min(...raw.map((p) => p[0])), hi = Math.max(...raw.map((p) => p[0]));
+  const kept = asPoints(side).filter(([u]) => u < lo || u > hi);
+  return kept.concat(pts).sort((p, q) => p[0] - q[0]);
+}
+
+function strokePoint(side, x, y) {
+  return [clamp01(winT(side, tOf(x))), gOfY(laneOf(side), y)];
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (!item) return;
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (y < RULER) {
+    cursor = Math.max(0, Math.min(dur(), tOf(x) - item.start_sec));
+    if (source) play(cursor); else draw();
+    return;
+  }
+  if (pencil) {
+    const side = sideAt(y);
+    if (!side || !gains) return;
+    canvas.setPointerCapture(e.pointerId);
+    const p = strokePoint(side, x, y);
+    stroke = { side, pts: [p], anchor: p, shift: e.shiftKey };
+    draw();
+    return;
+  }
+  const h = hit(x, y);
+  if (!h) return;
+  canvas.setPointerCapture(e.pointerId);
+  drag = { ...h, x0: x, win0: structuredClone(state[h.side]) };
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (stroke) {
+    const p = strokePoint(stroke.side, x, y);
+    if (e.shiftKey) {
+      // Straight line from where the stroke started.
+      const [a, b] = stroke.anchor[0] <= p[0] ? [stroke.anchor, p] : [p, stroke.anchor];
+      stroke.pts = [a, b];
+    } else {
+      stroke.pts.push(p);
+    }
+    draw();
+    return;
+  }
+  if (!drag) {
+    const h = item && !pencil && hit(x, y);
+    canvas.style.cursor = y < RULER ? "pointer" : pencil ? "crosshair"
+      : h ? (h.edge === "point" ? "move" : h.edge === "move" ? "grab" : "ew-resize") : "default";
+    return;
+  }
+  const win = state[drag.side];
+  if (drag.edge === "point") {
+    const pts = win.curve.points, i = drag.i;
+    const minGap = MIN_GAP_SEC / (win.end - win.start);
+    const u = Math.max(pts[i - 1][0] + minGap, Math.min(pts[i + 1][0] - minGap, winT(drag.side, tOf(x))));
+    pts[i] = [u, gOfY(laneOf(drag.side), y)];
+    drag.moved = true;
+    draw();
+    return;
+  }
+  const step = item.spb * (e.altKey ? 0.25 : 1);
+  const snap = (t) => item.zero_sec + Math.round((t - item.zero_sec) / step) * step;
+  const dt = (x - drag.x0) / canvas.clientWidth * dur(), w0 = drag.win0;
+  if (drag.edge === "move") {
+    const s = snap(w0.start + dt); win.start = s; win.end = s + (w0.end - w0.start);
+  } else if (drag.edge === "start") {
+    win.start = Math.min(snap(w0.start + dt), win.end - step);
+  } else {
+    win.end = Math.max(snap(w0.end + dt), win.start + step);
+  }
+  renderSides(); draw();
+});
+
+canvas.addEventListener("pointerup", () => {
+  if (stroke) {
+    const side = stroke.side, moved = stroke.pts.length > 1;
+    // Simplify only the drawn part (in screen pixels, so the tolerance is what
+    // you can see); untouched points stay exactly as they were.
+    const lane = laneOf(side), w = xOf(state[side].end) - xOf(state[side].start), h = lane.h - 4;
+    const px = [...stroke.pts].sort((p, q) => p[0] - q[0]).map(([u, g]) => [u * w, g * h]);
+    const [g0, g1] = ends(side);
+    const nearEnd = ([x, y]) => Math.hypot(x, y - g0 * h) < 2 * SIMPLIFY_PX ||
+      Math.hypot(x - w, y - g1 * h) < 2 * SIMPLIFY_PX;  // the fixed endpoints cover these
+    const drawn = simplify(px, SIMPLIFY_PX).filter((p) => !nearEnd(p)).map(([x, y]) => [x / w, y / h]);
+    const merged = previewStroke(drawn);
+    stroke = null;
+    if (moved) {
+      setDrawn(side, merged);
+      requestPreview();
+    } else draw();
+    return;
+  }
+  if (!drag) return;
+  const d = drag, win = state[d.side];
+  drag = null;
+  if (d.edge === "point") {
+    if (d.moved) { setDrawn(d.side, win.curve.points); requestPreview(); }
+  } else if (d.win0.start !== win.start || d.win0.end !== win.end) requestPreview();
+});
+
+canvas.addEventListener("dblclick", (e) => {
+  if (!item || pencil) return;
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const h = hit(x, y);
+  if (h && h.edge === "point") {
+    const pts = state[h.side].curve.points.filter((_, i) => i !== h.i);
+    setDrawn(h.side, pts);
+    requestPreview();
+    return;
+  }
+  const side = sideAt(y);
+  if (!side) return;
+  const u = winT(side, tOf(x));
+  if (u <= 0 || u >= 1) return;
+  const pts = asPoints(side);
+  pts.push([u, gOfY(laneOf(side), y)]);
+  setDrawn(side, pts);
+  requestPreview();
+});
+
+function setPencil(on) {
+  pencil = on;
+  $("pencil").classList.toggle("on", on);
+  canvas.style.cursor = on ? "crosshair" : "default";
+}
+$("pencil").onclick = () => setPencil(!pencil);
+
+// -- controls ---------------------------------------------------------------
+$("playBlend").onclick = () => play(Math.max(0, blendStart() - 8 * item.spb - item.start_sec));
+$("playCursor").onclick = () => play(cursor);
+$("stop").onclick = () => stop();
+$("loop").onclick = () => {
+  looping = !looping; $("loop").classList.toggle("on", looping);
+  if (source) play(position());
+};
+$("save").onclick = save;
+$("revert").onclick = () => { state = structuredClone(item.state); requestPreview(); };
+$("pick").onchange = () => { stop(); loadItem(Number($("pick").value)); };
+document.addEventListener("keydown", (e) => {
+  if (e.code === "KeyD" && !e.metaKey && !e.ctrlKey && e.target.tagName !== "SELECT") {
+    setPencil(!pencil);
+    return;
+  }
+  if (e.code === "Space" && e.target.tagName !== "SELECT") {
+    e.preventDefault();
+    source ? stop() : play(cursor);
+  }
+});
+window.addEventListener("resize", draw);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderSides(); draw(); });
+
+async function waitUntilRendered() {
+  for (;;) {
+    const st = await (await fetch("/status")).json();
+    $("title").textContent = st.plan;
+    if (st.error) { $("status").textContent = ""; $("issues").textContent = "Rendering failed: " + st.error; throw new Error(st.error); }
+    if (st.ready) { $("loading").hidden = true; return; }
+    const frac = st.total ? st.done / st.total : 0;
+    $("loadbar").style.width = `${Math.round(frac * 100)}%`;
+    $("loadtext").textContent = st.total
+      ? `Rendering the decks: ${st.done} of ${st.total} segments (time-stretching; cached for next time)…`
+      : "Rendering the decks…";
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+(async () => {
+  await waitUntilRendered();
+  const info = await (await fetch("/items")).json();
+  $("title").textContent = info.plan;
+  for (const it of info.items) {
+    const o = document.createElement("option"); o.value = it.index; o.textContent = it.label; $("pick").append(o);
+  }
+  await loadItem(info.items[0].index);
+})();
+</script>
+</body>
+</html>

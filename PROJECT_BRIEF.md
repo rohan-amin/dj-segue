@@ -7,7 +7,7 @@ You are working on **dj-segue**, an AI-driven DJ system focused on wordplay tran
 ## Read these in order, before doing anything
 
 1. `docs/architecture.md` — settled architectural decisions. Don't relitigate; if you want to, propose it as an "Open question" first.
-2. `docs/schema-v0.4.md` — the plan schema (latest; older versions are kept for reference). The schema is the API between layers; respect it.
+2. `docs/schema-v0.5.md` — the plan schema (latest; older versions are kept for reference). The schema is the API between layers; respect it.
 3. `docs/milestones.md` — what we're building, in what order. Stay in the milestone lane unless instructed otherwise.
 4. `docs/SESSION_LOG.md` — what previous sessions did and where they left off.
 

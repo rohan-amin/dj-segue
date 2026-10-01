@@ -52,7 +52,23 @@ from dj_segue.time_math import (
 # `equal_power`: a sin/cos fade whose squared gains sum to 1 across a
 # crossfade, so loudness doesn't dip. Crossfade transitions use it; lanes can
 # too (v0.3).
-Shape = Literal["linear", "step", "exponential", "equal_power"]
+PresetShape = Literal["linear", "step", "exponential", "equal_power"]
+
+
+@dataclass(frozen=True)
+class Points:
+    """A drawn curve (v0.5): (t, gain) pairs over the ramp, t in 0–1.
+
+    The gains are absolute (the ramp's start/end values are its first/last
+    points). `smooth` = monotone cubic (PCHIP) through the points, which never
+    overshoots them; otherwise straight lines.
+    """
+
+    points: tuple[tuple[float, float], ...]
+    smooth: bool = False
+
+
+Shape = PresetShape | Points
 
 
 @dataclass(frozen=True)
@@ -93,6 +109,14 @@ def shape_value(shape: Shape, v1: float, v2: float, t):
     """Evaluate a ramp shape at fraction t ∈ [0, 1). Works on floats and numpy arrays."""
     import numpy as np
 
+    if isinstance(shape, Points):
+        ts = np.array([p[0] for p in shape.points])
+        gs = np.array([p[1] for p in shape.points])
+        if shape.smooth:
+            from scipy.interpolate import PchipInterpolator
+
+            return PchipInterpolator(ts, gs)(np.clip(t, 0.0, 1.0))
+        return np.interp(t, ts, gs)
     if shape == "step":
         return v1 + 0.0 * t
     if shape == "linear":
@@ -343,6 +367,14 @@ def crossfader_gains(position):
 # ---------------------------------------------------------------------------
 
 
+def _shape(curve) -> Shape:
+    """A FadeWindow curve as a ramp shape: preset names pass through; a drawn
+    (schema PointCurve) curve becomes Points."""
+    if isinstance(curve, str):
+        return curve  # type: ignore[return-value]
+    return Points(tuple((float(t), float(g)) for t, g in curve.points), curve.smooth)
+
+
 def transition_envelopes(
     plan: Plan, mix_tempo: float, anchors: dict[str, float] | None = None
 ) -> dict[int, Envelope]:
@@ -361,10 +393,10 @@ def transition_envelopes(
         out_w, in_w = transition_windows(seg, mix_tempo, anchors)
         label = f"timeline[{i}] {seg.style}"
         per_deck.setdefault(seg.from_deck, []).append(
-            (Ramp(out_w.start_sec, out_w.end_sec, 1.0, 0.0, out_w.curve), label)
+            (Ramp(out_w.start_sec, out_w.end_sec, 1.0, 0.0, _shape(out_w.curve)), label)
         )
         per_deck.setdefault(seg.to_deck, []).append(
-            (Ramp(in_w.start_sec, in_w.end_sec, 0.0, 1.0, in_w.curve), label)
+            (Ramp(in_w.start_sec, in_w.end_sec, 0.0, 1.0, _shape(in_w.curve)), label)
         )
 
     out: dict[int, Envelope] = {}

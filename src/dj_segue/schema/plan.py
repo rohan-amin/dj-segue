@@ -1,6 +1,6 @@
-"""Pydantic models for the dj-segue plan schema (v0.1–v0.4).
+"""Pydantic models for the dj-segue plan schema (v0.1–v0.5).
 
-The shape mirrors `docs/schema-v0.4.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.5.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -242,14 +242,42 @@ TransitionStyle = Literal["crossfade", "cut", "vocal_handoff"]
 TransitionCurve = Literal["equal_power", "linear", "exponential"]
 
 
+class PointCurve(BaseModel):
+    """v0.5: a drawn curve for one side of a crossfade.
+
+    `points` are [t, gain] pairs: t runs 0 → 1 across that side's window
+    (strictly increasing, first 0, last 1); gain is that deck's actual volume,
+    0–1. An `out` curve starts at 1 and ends at 0, an `in` curve the reverse;
+    in between it may go anywhere. `smooth`: false joins the points with
+    straight lines, true with a monotone cubic (PCHIP) that never overshoots
+    them.
+    """
+
+    model_config = _FORBID
+    points: list[tuple[float, float]] = Field(min_length=2)
+    smooth: bool = False
+
+    @model_validator(mode="after")
+    def _check_points(self) -> "PointCurve":
+        ts = [t for t, _ in self.points]
+        if ts[0] != 0 or ts[-1] != 1:
+            raise ValueError("curve points must start at t=0 and end at t=1")
+        if any(b <= a for a, b in zip(ts, ts[1:])):
+            raise ValueError("curve point times must strictly increase")
+        if any(not 0 <= g <= 1 for _, g in self.points):
+            raise ValueError("curve gains must be within 0–1")
+        return self
+
+
 class TransitionSide(BaseModel):
     """v0.4: override one side (`out` or `in`) of a crossfade. Unset fields
-    come from the transition; `offset` is from its `start_at` (may be negative)."""
+    come from the transition; `offset` is from its `start_at` (may be negative).
+    v0.5: `curve` may be a drawn PointCurve."""
 
     model_config = _FORBID
     offset: Duration | None = None
     duration: Duration | None = None
-    curve: TransitionCurve | None = None
+    curve: TransitionCurve | PointCurve | None = None
 
 
 class TransitionSegment(BaseModel):
@@ -267,6 +295,13 @@ class TransitionSegment(BaseModel):
 
     @model_validator(mode="after")
     def _shaping_is_crossfade_only(self) -> "TransitionSegment":
+        for name, side, start in (("out", self.out, 1), ("in", self.in_, 0)):
+            if side is not None and isinstance(side.curve, PointCurve):
+                pts = side.curve.points
+                if pts[0][1] != start or pts[-1][1] != 1 - start:
+                    raise ValueError(
+                        f"a drawn `{name}` curve must go from {start} to {1 - start}"
+                    )
         if self.style != "crossfade":
             used = [
                 k for k, v in (("curve", self.curve), ("out", self.out), ("in", self.in_))
@@ -388,6 +423,14 @@ class Plan(BaseModel):
             problems += [
                 f"{where}: {what} requires schema_version 0.3"
                 for where, what in _v03_features(self)
+            ]
+        if v in ("0.1", "0.2", "0.3", "0.4"):
+            problems += [
+                f"timeline[{i}]: a drawn `{name}` curve requires schema_version 0.5"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, TransitionSegment)
+                for name, side in (("out", seg.out), ("in", seg.in_))
+                if side is not None and isinstance(side.curve, PointCurve)
             ]
         if v in ("0.1", "0.2", "0.3"):
             problems += [
