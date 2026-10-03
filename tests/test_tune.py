@@ -175,3 +175,143 @@ def test_drawn_curve_saves_and_bumps_the_schema(session) -> None:
         '      "in": { "curve": { "points": [[0, 0], [0.5, 0.1], [1, 1]], "smooth": true } } }',
     )
     assert session.describe(2)["state"]["in"]["curve"]["smooth"] is True
+
+
+# --- EQ / filter lanes and echo out (v0.7) -------------------------------------
+
+ECHO_PLAN = """// tune echo plan
+{
+  "schema_version": "0.6",
+  "meta": { "mix_name": "e", "mix_tempo": 120 },
+  "tracks": {
+    "a": { "path": "a.wav", "bpm": 120 },
+    "b": { "path": "b.wav", "bpm": 120 }
+  },
+  "decks": { "1": { "label": "A" }, "2": { "label": "B" } },
+  "timeline": [
+    { "type": "play", "id": "a_end", "deck": 1, "track": "a",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 0 } },
+    { "type": "play", "deck": 2, "track": "b",
+      "from": { "beat": 0 }, "to": { "beat": 48 },
+      "start_at": { "after": "a_end", "offset": { "beats": -8 } } },
+    { "type": "transition", "style": "echo_out", "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "a_end" }, "duration": { "beats": 4 },
+      "echo": { "every": { "beats": 1 }, "feedback": 0.5 } }
+  ],
+  "automation": [
+    // bass out before the echo
+    { "lane": "eq", "deck": 1, "band": "low",
+      "keyframes": [
+        { "at": { "beat": 24 }, "value_db": 0 },
+        { "at": { "beat": 28 }, "value_db": -24 }
+      ] }
+  ]
+}
+"""
+
+
+@pytest.fixture
+def echo_session(tmp_path):
+    rng = np.random.default_rng(2)
+    for name in ("a", "b"):
+        sf.write(tmp_path / f"{name}.wav", (0.2 * rng.standard_normal(60 * BEAT)).astype(np.float32),
+                 SR, subtype="FLOAT")
+    plan = tmp_path / "e.plan.jsonc"
+    plan.write_text(ECHO_PLAN)
+    s = TuneSession(plan, tmp_path)
+    s.load()
+    return s
+
+
+def test_lists_the_echo_out_with_its_state(echo_session) -> None:
+    s = echo_session
+    (it,) = s.items()
+    assert it.style == "echo_out"
+    d = s.describe(2)
+    assert d["style"] == "echo_out"
+    st = d["state"]
+    assert st["out"]["start"] == st["out"]["end"] == _beats(s, 32)
+    assert st["in"] == {"start": _beats(s, 32), "end": _beats(s, 32), "curve": "step"}
+    assert st["echo"] == {"end": _beats(s, 36), "every": 1, "feedback": 0.5, "highpass": 0.0}
+    assert st["lanes"]["1"]["low"] == [[_beats(s, 24), 0, 0], [_beats(s, 28), -24, 1]]
+    assert st["lanes"]["2"]["filter"] is None
+    r = s.preview(2, st)
+    assert r["ok"] and r["changes"] == {} and r["lane_changes"] == []
+    assert r["tail_peaks"] is not None and set(r["peaks"]) == {"1", "2"}
+    assert "A → B · echo out" in s.label(it)
+
+
+def test_echo_edits_save_in_place(echo_session) -> None:
+    s = echo_session
+    st = s.describe(2)["state"]
+    st["echo"].update(end=_beats(s, 40), every=2, feedback=0.6)
+    st["in"].update(start=_beats(s, 30), end=_beats(s, 32), curve="linear")
+    r = s.preview(2, st)
+    assert r["ok"], r
+    assert r["changes"] == {
+        "duration": {"beats": 8},
+        "echo": {"every": {"beats": 2}, "feedback": 0.6},
+        "in": {"offset": {"beats": -2}, "duration": {"beats": 2}, "curve": "linear"},
+    }
+    assert s.save(2, st)["saved"]
+    assert '"echo": { "every": { "beats": 2 }, "feedback": 0.6 }' in s.plan_path.read_text()
+
+
+def test_echo_highpass_bumps_to_v07(echo_session) -> None:
+    st = echo_session.describe(2)["state"]
+    st["echo"]["highpass"] = 0.8
+    r = echo_session.preview(2, st)
+    assert r["ok"] and r["plan_changes"] == {"schema_version": "0.7"}
+
+
+def test_cut_needs_the_repeated_beat_on_the_deck(echo_session) -> None:
+    s = echo_session
+    st = s.describe(2)["state"]
+    st["out"]["start"] = st["out"]["end"] = _beats(s, 34)  # after deck 1 stops
+    r = s.preview(2, st)
+    assert not r["ok"]
+
+
+def test_moved_keyframe_keeps_the_rest_of_the_file(echo_session) -> None:
+    s = echo_session
+    st = s.describe(2)["state"]
+    st["lanes"]["1"]["low"][1] = [_beats(s, 30), -18, 1]
+    r = s.preview(2, st)
+    assert r["ok"] and r["lane_changes"] == ["automation[0] deck 1 low: 2 keyframes"]
+    assert s.save(2, st)["saved"]
+    assert s.plan_path.read_text() == ECHO_PLAN.replace(
+        '{ "at": { "beat": 28 }, "value_db": -24 }', '{ "at": { "beat": 30 }, "value_db": -18 }'
+    )
+
+
+def test_new_filter_lane_is_appended_and_bumps_the_schema(echo_session, tmp_path) -> None:
+    s = echo_session
+    st = s.describe(2)["state"]
+    # New keyframes are written like the transition's start_at (after a_end).
+    st["lanes"]["1"]["filter"] = [[_beats(s, 24), 0, None], [_beats(s, 32), 0.5, None]]
+    r = s.preview(2, st)
+    assert r["ok"], r
+    assert r["plan_changes"] == {"schema_version": "0.7"}
+    assert r["lane_changes"] == ["new lane: deck 1 filter, 2 keyframes"]
+    page, _ = sf.read(io.BytesIO(s.audio[r["version"]]), dtype="float32")
+    it = s.item(2)
+    assert s.save(2, st)["saved"]
+    text = s.plan_path.read_text()
+    assert """    { "lane": "filter", "deck": 1,
+      "keyframes": [
+        { "at": { "after": "a_end", "offset": { "beats": -8 } }, "value": 0 },
+        { "at": { "after": "a_end" }, "value": 0.5 }
+      ] }
+  ]""" in text
+    assert '"schema_version": "0.7"' in text
+    # What the page played is what a render of the saved plan produces.
+    fresh = TuneSession(s.plan_path, tmp_path)
+    full = NativeEngine().render(fresh.plan, tmp_path, fresh.grids).samples
+    np.testing.assert_array_equal(page, full[it.start : it.end])
+
+
+def test_lane_values_are_checked(echo_session) -> None:
+    st = echo_session.describe(2)["state"]
+    st["lanes"]["2"]["mid"] = [[1.0, -40, None]]
+    r = echo_session.preview(2, st)
+    assert not r["ok"] and "outside -24" in r["issues"][0]

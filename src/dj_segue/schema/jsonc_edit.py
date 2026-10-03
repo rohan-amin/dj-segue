@@ -6,8 +6,10 @@ the user wrote them.
 
 `locate(src, path)` finds the object at a path like `("timeline", 3)`;
 `edit_object(src, path, changes)` applies `{key: new_value}` changes, where a
-value of `DELETE` removes the key. New values are written inline in the
-plan's style: `{ "beats": 8 }`, `[1, 2]`.
+value of `DELETE` removes the key; `append_item(src, path, value)` adds to
+the end of an array. New values are written in the plan's style: inline
+(`{ "beats": 8 }`, `[1, 2]`), except a list of several objects (keyframes),
+which gets one object per line.
 """
 
 from __future__ import annotations
@@ -154,6 +156,50 @@ def dumps_inline(value: Any) -> str:
     return json.dumps(value)
 
 
+def dumps_block(value: Any, indent: str) -> str:
+    """Like dumps_inline, but a list of several objects puts one per line
+    (indented one step past `indent`, the line its value starts on)."""
+    if isinstance(value, list) and len(value) > 1 and all(isinstance(v, dict) for v in value):
+        inner = f",\n{indent}  ".join(dumps_inline(v) for v in value)
+        return f"[\n{indent}  {inner}\n{indent}]"
+    if isinstance(value, dict) and any(
+        isinstance(v, list) and len(v) > 1 and all(isinstance(x, dict) for x in v)
+        for v in value.values()
+    ):
+        # A lane: scalars on the first line, each block list on its own.
+        flat = [(k, v) for k, v in value.items() if not isinstance(v, list)]
+        blocks = [(k, v) for k, v in value.items() if isinstance(v, list)]
+        head = ", ".join(f"{json.dumps(k)}: {dumps_inline(v)}" for k, v in flat)
+        tail = f",\n{indent}  ".join(
+            f"{json.dumps(k)}: {dumps_block(v, indent + '  ')}" for k, v in blocks
+        )
+        return "{ " + head + (f",\n{indent}  " if head else "") + tail + " }"
+    return dumps_inline(value)
+
+
+def _line_indent(src: str, pos: int) -> str:
+    line_start = src.rfind("\n", 0, pos) + 1
+    rest = src[line_start:]
+    return rest[: len(rest) - len(rest.lstrip(" \t"))]
+
+
+def append_item(src: str, path: tuple, value: Any) -> str:
+    """Add `value` at the end of the array at `path`, on its own line
+    indented like the last item (or one step in from the array)."""
+    arr = locate(src, path)
+    if arr.items:
+        last = arr.items[-1]
+        indent = _line_indent(src, last.start)
+        out = src[: last.end] + f",\n{indent}{dumps_block(value, indent)}" + src[last.end :]
+    else:
+        outer = _line_indent(src, arr.start)
+        indent = outer + "  "
+        out = (src[: arr.start] + f"[\n{indent}{dumps_block(value, indent)}\n{outer}]"
+               + src[arr.end :])
+    jsonc.loads(out)
+    return out
+
+
 def edit_object(src: str, path: tuple, changes: dict[str, Any]) -> str:
     """Apply `changes` to the object at `path`; return the new text.
 
@@ -171,7 +217,8 @@ def edit_object(src: str, path: tuple, changes: dict[str, Any]) -> str:
         if value is DELETE:
             edits.append(_delete_span(src, obj, m))
         else:
-            edits.append((m.value_start, m.value_end, dumps_inline(value)))
+            indent = _line_indent(src, m.key_start)
+            edits.append((m.value_start, m.value_end, dumps_block(value, indent)))
 
     new_keys = [(k, v) for k, v in changes.items() if k not in by_key and v is not DELETE]
     if new_keys:
@@ -180,7 +227,9 @@ def edit_object(src: str, path: tuple, changes: dict[str, Any]) -> str:
             line_start = src.rfind("\n", 0, last.key_start) + 1
             first_on_line = line_start + len(src[line_start:]) - len(src[line_start:].lstrip(" \t"))
             indent = src[line_start:first_on_line]
-            text = "".join(f",\n{indent}{json.dumps(k)}: {dumps_inline(v)}" for k, v in new_keys)
+            text = "".join(
+                f",\n{indent}{json.dumps(k)}: {dumps_block(v, indent)}" for k, v in new_keys
+            )
             edits.append((last.value_end, last.value_end, text))
         else:
             text = ", ".join(f"{json.dumps(k)}: {dumps_inline(v)}" for k, v in new_keys)

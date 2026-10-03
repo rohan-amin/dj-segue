@@ -115,6 +115,11 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 **T5 — Loop points.** Drag a loop's `from`; edit its `schedule` (length, repetitions) in a small table; play the loop with pre-roll; region re-render.
 
+**T7 — EQ, filter and echo out.**  (DONE 2026-10-03)
+- Echo outs are items: drag the cut (tail and incoming fade move with it) and the tail's end; `every` / feedback / high-pass controls; the incoming deck's hard entry drags into a fade (`in`).
+- Two strips under the decks edit their `eq` (low / mid / high) and `filter` lanes over the region: click adds a keyframe (beat snap, Alt ¼), drag moves, double-click removes. Untouched keyframes keep their text, moved ones their position's form, new ones follow the transition's `start_at` form; new lanes are appended to `automation`. Saving bumps `schema_version` when the edit needs it.
+- Deck waveforms show the audio after EQ, filter and volume; the echo tail is drawn over the outgoing deck. Item labels name the decks, kind and mix beat.
+
 **T6 — A/B snapshots.** Save the current setting as a snapshot, keep editing, switch between snapshots while playing.
 
 **Acceptance test:** The Fancy → Like 'em All blend reshaped in the page with a hand-drawn `in` curve and a moved jump point; saved plan differs from the original only in those keys (comments intact); `dj-segue render` of the saved plan matches what the page played (same sample-level gains; region audio byte-identical).

@@ -41,12 +41,17 @@ use (beat 0 = first downbeat, bar N = beat 4N). Buttons (and keys) move by beat,
 8 bars or section, loop ½–16 beats, toggle a click on the grid, and mark beats to copy
 into a plan as `{ "beat": N }`.
 
-`dj-segue tune <plan>` opens a plan's crossfades in the browser: both decks'
-waveforms over the blend with their volume curves. Drag either side's fade window
-(snaps to beats; Alt for ¼ beats), pick a curve per side or draw your own (**D**
-for the pencil; drag, add or remove points), and play or loop the blend. What you hear is rendered by the engine itself, so it's exactly what `play` produces.
-**Save** writes only the transition's changed keys into the plan, keeping your
-comments and formatting. (Moving where a track starts and jump/loop points are
+`dj-segue tune <plan>` opens a plan's crossfades and echo outs in the browser: both
+decks' waveforms over the blend (as they sound, after EQ, filter and volume) with their
+volume curves. Drag either side's fade window (snaps to beats; Alt for ¼ beats), pick a
+curve per side or draw your own (**D** for the pencil; drag, add or remove points), and
+play or loop the blend. For an echo out, drag the cut and the tail's end, and set its
+repeat length, feedback and high-pass; drag the incoming deck's handle to turn its hard
+entry into a fade. Two strips under the decks edit their EQ (low / mid / high) and filter
+lanes: click to add a keyframe, drag it, double-click to remove it. What you hear is
+rendered by the engine itself, so it's exactly what `play` produces.
+**Save** writes only the changed keys and keyframes into the plan (new lanes are appended
+to `automation`), keeping your comments and formatting. (Moving where a track starts and jump/loop points are
 coming; see M4.5 in `docs/milestones.md`.)
 
 Time-stretched audio is cached in the project's `.cache/stretch` folder (git-ignored;
