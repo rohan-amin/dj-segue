@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from dj_segue.executor.native.engine import DeckRender
+from dj_segue.executor.native.engine import DeckRender, Levels
 from dj_segue.executor.native.limiter import (
     LIMIT_CEILING_DB,
     _sizes,
@@ -71,7 +71,8 @@ def test_excerpt_equals_full_mix():
     decks = {1: _loud(n, 2), 2: _loud(n, 3)}
     gains = {1: np.linspace(1, 0, n), 2: np.linspace(0, 1, n)}
     parts = DeckRender(decks=decks, sample_rate=SR, total_samples=n, mix_tempo=120.0, timeline=None)
-    full = parts.mix(gains)
+    levels = Levels(gains)
+    full = parts.mix(levels)
     before, after = context_samples(SR)
     for start, end in [(0, 300), (1234, 2345), (n - 50, n), (before + 1, n - after - 1)]:
-        np.testing.assert_array_equal(parts.mix(gains, start, end), full[start:end])
+        np.testing.assert_array_equal(parts.mix(levels, start, end), full[start:end])

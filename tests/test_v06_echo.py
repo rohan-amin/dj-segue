@@ -167,8 +167,7 @@ def test_excerpt_equals_full_render(tmp_path) -> None:
     plan = _plan()
     eng = NativeEngine()
     parts = eng.render_decks(plan, tmp_path)
-    gains = eng.deck_gains(plan, parts)
-    tails = eng.echo_tails(plan, parts, gains)
+    levels = eng.levels(plan, parts)
     full = eng.render(plan, tmp_path).samples
     for a, b in [(0, 100), (8 * BEAT - 50, 9 * BEAT), (10 * BEAT, 12 * BEAT + 7)]:
-        np.testing.assert_array_equal(parts.mix(gains, a, b, tails=tails), full[a:b])
+        np.testing.assert_array_equal(parts.mix(levels, a, b), full[a:b])

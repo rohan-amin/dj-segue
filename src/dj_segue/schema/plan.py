@@ -1,6 +1,6 @@
 """Pydantic models for the dj-segue plan schema (v0.1–v0.5).
 
-The shape mirrors `docs/schema-v0.6.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.7.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -288,6 +288,9 @@ class Echo(BaseModel):
     model_config = _FORBID
     every: Duration
     feedback: float = Field(ge=0, le=1)
+    # v0.7: the tail's high-pass sweeps from off at the cut to this filter
+    # knob position (0–1) at the tail's end. 0 = no sweep.
+    highpass: float = Field(default=0.0, ge=0, le=1)
 
 
 class TransitionSegment(BaseModel):
@@ -385,6 +388,17 @@ class EqLane(BaseModel):
     interpolation: Interpolation = "linear"
 
 
+class FilterLane(BaseModel):
+    """v0.7: a deck's filter knob, -1 (low-pass, only lows) … 0 (off) … +1
+    (high-pass, only highs)."""
+
+    model_config = _FORBID
+    lane: Literal["filter"]
+    deck: int
+    keyframes: list[FloatKeyframe]
+    interpolation: Interpolation = "linear"
+
+
 class CrossfaderLane(BaseModel):
     model_config = _FORBID
     lane: Literal["crossfader"]
@@ -393,7 +407,7 @@ class CrossfaderLane(BaseModel):
 
 
 AutomationLane = Annotated[
-    Union[DeckVolumeLane, StemVolumeLane, EqLane, CrossfaderLane],
+    Union[DeckVolumeLane, StemVolumeLane, EqLane, FilterLane, CrossfaderLane],
     Field(discriminator="lane"),
 ]
 
@@ -448,6 +462,18 @@ class Plan(BaseModel):
                 if isinstance(seg, TransitionSegment)
                 for name, side in (("out", seg.out), ("in", seg.in_))
                 if side is not None and isinstance(side.curve, PointCurve)
+            ]
+        if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6"):
+            problems += [
+                f"automation[{i}]: the filter lane requires schema_version 0.7"
+                for i, lane in enumerate(self.automation)
+                if isinstance(lane, FilterLane)
+            ] + [
+                f"timeline[{i}]: echo.highpass requires schema_version 0.7"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, TransitionSegment)
+                and seg.echo is not None
+                and "highpass" in seg.echo.model_fields_set
             ]
         if v in ("0.1", "0.2", "0.3", "0.4", "0.5"):
             problems += [

@@ -13,9 +13,12 @@
       Rejected in plans that declare 0.1–0.4.
 0.6 — additive: `echo_out` transitions (`echo: {every, feedback}`; optional
       `in`). Rejected in plans that declare 0.1–0.5.
+0.7 — additive: `filter` automation lane (DJ filter knob, -1..+1) and
+      `echo.highpass` (a high-pass sweep on the echo tail). Rejected in plans
+      that declare 0.1–0.6.
 """
 
 from __future__ import annotations
 
-CURRENT_SCHEMA_VERSION = "0.6"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"})
+CURRENT_SCHEMA_VERSION = "0.7"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"})

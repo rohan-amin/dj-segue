@@ -14,6 +14,7 @@ from dj_segue.schema.plan import (
     DbKeyframe,
     DeckVolumeLane,
     EqLane,
+    FilterLane,
     LoopSegment,
     PlaySegment,
     Plan,
@@ -147,7 +148,9 @@ def _write_timeline(
             if seg.echo is not None:
                 shaping += (
                     f"  echo=(every {_fmt_duration(seg.echo.every)}, "
-                    f"feedback {seg.echo.feedback:g})"
+                    f"feedback {seg.echo.feedback:g}"
+                    + (f", highpass {seg.echo.highpass:g}" if seg.echo.highpass else "")
+                    + ")"
                 )
             for name, side in (("out", seg.out), ("in", seg.in_)):
                 if side is not None:
@@ -234,6 +237,8 @@ def _write_automation(
             head = f"stem_volume   deck {lane.deck} stem={lane.stem}"
         elif isinstance(lane, EqLane):
             head = f"eq            deck {lane.deck} band={lane.band}"
+        elif isinstance(lane, FilterLane):
+            head = f"filter        deck {lane.deck}"
         elif isinstance(lane, CrossfaderLane):
             head = "crossfader"
         else:  # pragma: no cover

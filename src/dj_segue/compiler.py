@@ -33,6 +33,7 @@ from dj_segue.schema.plan import (
     CrossfaderLane,
     DeckVolumeLane,
     EqLane,
+    FilterLane,
     FloatKeyframe,
     LoopSegment,
     PlaySegment,
@@ -337,6 +338,24 @@ def eq_envelope(
                 anchors=anchors,
             )
     return None
+
+
+def filter_envelope(
+    plan: Plan, deck: int, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> Envelope | None:
+    """A deck's filter knob position (-1..+1, 0 = off), or None without a
+    filter lane. One lane per deck (validator)."""
+    for i, lane in enumerate(plan.automation):
+        if isinstance(lane, FilterLane) and lane.deck == deck:
+            return keyframes_to_envelope(
+                lane.keyframes, lane.interpolation, mix_tempo,
+                f"automation[{i}] filter", default=0.0, anchors=anchors,
+            )
+    return None
+
+
+def filter_decks(plan: Plan) -> set[int]:
+    return {lane.deck for lane in plan.automation if isinstance(lane, FilterLane)}
 
 
 def eq_decks(plan: Plan) -> set[int]:

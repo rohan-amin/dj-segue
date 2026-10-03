@@ -6,7 +6,7 @@ curves, and draggable fade windows with a curve per side.
 
 The page never does engine maths. The decks are rendered once before gain
 (`NativeEngine.render_decks`); every edit is sent here, validated with the
-real validator, compiled to gains by the real engine (`deck_gains`), and
+real validator, compiled to levels by the real engine (`levels`), and
 mixed exactly as `render` mixes — the page plays those samples. Saving
 rewrites only the transition's changed keys (`schema.jsonc_edit`), keeping
 comments and formatting.
@@ -286,10 +286,9 @@ class TuneSession:
 
         it = self.item(index)
         anchors = resolve_timeline(plan, self.parts.mix_tempo, self.grids).anchors
-        gains = self.engine.deck_gains(plan, self.parts, anchors)
-        eq = self.engine.deck_eq(plan, self.parts, anchors)
-        tails = self.engine.echo_tails(plan, self.parts, gains, anchors, eq=eq)
-        mixed = self.parts.mix(gains, it.start, it.end, eq=eq, tails=tails)
+        levels = self.engine.levels(plan, self.parts, anchors)
+        gains = levels.gains
+        mixed = self.parts.mix(levels, it.start, it.end)
         buf = io.BytesIO()
         sf.write(buf, mixed, self.parts.sample_rate, format="WAV", subtype="FLOAT")
         with self._lock:

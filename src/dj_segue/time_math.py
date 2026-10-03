@@ -201,6 +201,7 @@ class EchoWindow:
     every_sec: float
     end_sec: float
     feedback: float
+    highpass: float = 0.0  # v0.7: tail's filter knob at end_sec (0 = none)
 
 
 def echo_window(
@@ -212,4 +213,5 @@ def echo_window(
         duration_to_seconds(seg.echo.every, mix_tempo),
         cut + duration_to_seconds(seg.duration, mix_tempo),
         seg.echo.feedback,
+        seg.echo.highpass,
     )

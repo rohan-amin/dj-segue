@@ -15,6 +15,7 @@ dependencies = [
     "numpy>=1.26",
     "soundfile>=0.12",
     "librosa>=0.10",
+    "numba>=0.59",  # the filter lane's per-sample filter (librosa needs it too)
     "sounddevice>=0.4",
 ]
 

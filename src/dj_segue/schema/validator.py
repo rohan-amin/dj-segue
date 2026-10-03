@@ -23,6 +23,7 @@ from dj_segue.schema.plan import (
     CuePos,
     DeckVolumeLane,
     EqLane,
+    FilterLane,
     FloatKeyframe,
     DbKeyframe,
     LoopSegment,
@@ -72,6 +73,7 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
     issues.extend(_check_transitions(plan, mix_tempo, anchors))
     issues.extend(_check_single_crossfader(plan))
     issues.extend(_check_eq_lanes(plan))
+    issues.extend(_check_filter_lanes(plan))
     if issues:
         raise PlanValidationError(issues)
 
@@ -603,6 +605,28 @@ def _check_eq_lanes(plan: Plan) -> list[str]:
                 issues.append(
                     f"automation[{i}].keyframes[{j}]: eq value_db {kf.value_db:g} is "
                     f"outside {EQ_MIN_DB:g} to {EQ_MAX_DB:+g} dB"
+                )
+    return issues
+
+
+def _check_filter_lanes(plan: Plan) -> list[str]:
+    """Filter knob values within -1..+1; one filter lane per deck (v0.7)."""
+    issues: list[str] = []
+    seen: dict[int, int] = {}
+    for i, lane in enumerate(plan.automation):
+        if not isinstance(lane, FilterLane):
+            continue
+        if lane.deck in seen:
+            issues.append(
+                f"automation[{i}]: a second filter lane for deck {lane.deck} "
+                f"(first is automation[{seen[lane.deck]}])"
+            )
+        seen.setdefault(lane.deck, i)
+        for j, kf in enumerate(lane.keyframes):
+            if not -1.0 <= kf.value <= 1.0:
+                issues.append(
+                    f"automation[{i}].keyframes[{j}]: filter value {kf.value:g} is "
+                    f"outside -1 to +1"
                 )
     return issues
 

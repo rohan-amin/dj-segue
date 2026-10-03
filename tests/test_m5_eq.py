@@ -132,10 +132,10 @@ def test_excerpt_equals_full_render(tmp_path) -> None:
     plan = _plan([_lane("low", (4, 0), (8, -24)), _lane("high", (6, 0), (10, 6))])
     eng = NativeEngine()
     parts = eng.render_decks(plan, tmp_path)
-    gains, eq = eng.deck_gains(plan, parts), eng.deck_eq(plan, parts)
+    levels = eng.levels(plan, parts)
     full = eng.render(plan, tmp_path).samples
     for a, b in [(0, 999), (7 * BEAT, 9 * BEAT), (20 * BEAT, 24 * BEAT)]:
-        np.testing.assert_array_equal(parts.mix(gains, a, b, eq=eq), full[a:b])
+        np.testing.assert_array_equal(parts.mix(levels, a, b), full[a:b])
 
 
 def test_echo_repeats_what_the_eq_let_through(tmp_path) -> None:
