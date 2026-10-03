@@ -1,8 +1,9 @@
 """Native engine M2 behavior: transitions, crossfader, gain stacking, beat-locking,
 and hard failure on features the engine doesn't implement yet.
 
-Tracks here are constant-value (DC) FLOAT WAVs, so the output sample *is* the
-applied gain times the track value — gains can be asserted exactly.
+Tracks here are constant-value (DC) FLOAT WAVs rendered without the master
+limiter, so the output sample *is* the applied gain times the track value —
+gains can be asserted exactly.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ def _trans(style: str, beat: float, dur: float, frm: int = 1, to: int = 2) -> di
 
 
 def _render(plan: Plan, root: Path) -> np.ndarray:
-    return NativeEngine().render(plan, root).samples[:, 0]
+    return NativeEngine(limited=False).render(plan, root).samples[:, 0]
 
 
 # ---------------------------------------------------------------------------

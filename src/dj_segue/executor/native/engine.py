@@ -24,6 +24,9 @@ just before its `from`.
 
 Per-deck gain = product of: transition envelope × deck_volume lanes ×
 crossfader gain (decks 1–2 only). All come from dj_segue.compiler.
+
+The summed mix goes through the master limiter (limiter.py), which holds
+sample peaks to -1 dBFS and leaves mixes below that untouched.
 """
 
 from __future__ import annotations
@@ -49,6 +52,8 @@ from dj_segue.compiler import (
 )
 from dj_segue.executor.base import MixExecutor, RenderResult
 from dj_segue.executor.native.curves import render_envelope
+from dj_segue.executor.native.limiter import context_samples as limiter_context
+from dj_segue.executor.native.limiter import limit
 from dj_segue.executor.native.stretch import time_stretch
 from dj_segue.schema.plan import (
     EqLane,
@@ -74,13 +79,25 @@ class DeckRender:
     mix_tempo: float
     timeline: Timeline
 
-    def mix(self, gains: dict[int, np.ndarray], start: int = 0, end: int | None = None) -> np.ndarray:
-        """Sum of the decks times their gains over samples [start, end)."""
+    def mix(
+        self,
+        gains: dict[int, np.ndarray],
+        start: int = 0,
+        end: int | None = None,
+        *,
+        limited: bool = True,
+    ) -> np.ndarray:
+        """Sum of the decks times their gains over samples [start, end),
+        through the master limiter — the same samples a full render has."""
         end = self.total_samples if end is None else end
-        out = np.zeros((end - start, 2), dtype=np.float32)
+        before, after = limiter_context(self.sample_rate) if limited else (0, 0)
+        lo, hi = max(0, start - before), min(self.total_samples, end + after)
+        out = np.zeros((hi - lo, 2), dtype=np.float32)
         for deck, buf in self.decks.items():
-            out += buf[start:end] * gains[deck][start:end, None]
-        return out
+            out += buf[lo:hi] * gains[deck][lo:hi, None]
+        if limited:
+            out = limit(out, self.sample_rate)
+        return out[start - lo : end - lo]
 
 
 @dataclass(frozen=True)
@@ -100,6 +117,10 @@ class _CompiledPlay:
 
 
 class NativeEngine(MixExecutor):
+    def __init__(self, *, limited: bool = True) -> None:
+        # limited=False skips the master limiter (tests that assert raw gains).
+        self.limited = limited
+
     def render(
         self,
         plan: Plan,
@@ -113,7 +134,9 @@ class NativeEngine(MixExecutor):
                 sample_rate=parts.sample_rate,
             )
         gains = self.deck_gains(plan, parts)
-        return RenderResult(samples=parts.mix(gains), sample_rate=parts.sample_rate)
+        return RenderResult(
+            samples=parts.mix(gains, limited=self.limited), sample_rate=parts.sample_rate
+        )
 
     def render_decks(
         self,

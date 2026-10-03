@@ -222,21 +222,21 @@ def _ramp_plan(tmp_path: Path) -> Plan:
 
 
 def test_engine_no_grid_reads_from_sample_zero(tmp_path) -> None:
-    out = NativeEngine().render(_ramp_plan(tmp_path), tmp_path).samples
+    out = NativeEngine(limited=False).render(_ramp_plan(tmp_path), tmp_path).samples
     assert out.shape[0] == 2 * SR
     assert out[100, 0] == pytest.approx(100.0)
 
 
 def test_engine_grid_anchor_shifts_track_read_offset(tmp_path) -> None:
     grids = {"r": TrackGrid(anchor_sec=1.0, bpm=120.0)}
-    out = NativeEngine().render(_ramp_plan(tmp_path), tmp_path, grids).samples
+    out = NativeEngine(limited=False).render(_ramp_plan(tmp_path), tmp_path, grids).samples
     assert out[100, 0] == pytest.approx(float(SR + 100))
     assert out.shape[0] == 2 * SR  # span is (to - from); the anchor cancels
 
 
 def test_engine_negative_anchor_pads_with_silence(tmp_path) -> None:
     grids = {"r": TrackGrid(anchor_sec=-0.01, bpm=120.0)}
-    out = NativeEngine().render(_ramp_plan(tmp_path), tmp_path, grids).samples
+    out = NativeEngine(limited=False).render(_ramp_plan(tmp_path), tmp_path, grids).samples
     lead = int(round(0.01 * SR))
     assert np.all(out[:lead, 0] == 0.0)
     assert out[lead, 0] == pytest.approx(0.0) and out[lead + 5, 0] == pytest.approx(5.0)

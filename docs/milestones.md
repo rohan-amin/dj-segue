@@ -143,7 +143,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - 3-band EQ per deck and per stem (port `professional_eq.py`).
 - Lowpass/highpass filter automation lane.
 - Crossfaded coefficient updates (no zipper noise).
-- Master limiter on the mix output, so stretched/summed peaks above 0 dBFS don't hard-clip (decided 2026-09-30; no interim gain cut).
+- Master limiter on the mix output, so stretched/summed peaks above 0 dBFS don't hard-clip (decided 2026-09-30; no interim gain cut). **Done 2026-10-03:** `executor/native/limiter.py`, -1 dBFS sample-peak ceiling, ~10 ms lookahead/release, 50 ms hold; built from finite windows so tune excerpts stay byte-identical to renders.
 - **Echo out** (added 2026-09-30, pulled from "Beyond M7"): a beat-synced delay with feedback on the outgoing deck; the dry signal cuts on a downbeat and the echo tail decays over N beats, optionally through a high-pass sweep (the filter lane above). Lets a mix leave a track without beat-overlap, so big tempo gaps (Like 'em All 93 → Bottoms Up 74) needn't be stretched. Likely `"style": "echo_out"` on a transition (echo length in beats, feedback, tail length) in a new schema version; deterministic, beat-locked parameters. Tune page shows and adjusts the tail. Until then, the nearest substitute is a tightening loop roll + fade.
 
 **Acceptance test:** A transition that kills the lows on the outgoing track over the last 4 beats while keeping vocals intact. Plus: Like 'em All echoes out (1-beat echo, tail over ~4 beats) into Bottoms Up at its native tempo; the echo repeats land on the mix beat grid.
