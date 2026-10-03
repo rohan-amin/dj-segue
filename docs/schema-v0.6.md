@@ -333,6 +333,8 @@ Time-varying parameter changes. A flat list of *lanes*, each targeting one param
 | `eq`           | `deck`, `band`             | dB, –24 to +12 (per band)         |
 | `crossfader`   | (none)                     | –1.0 (full deck 1) to +1.0 (full deck 2); equal-power law, centre = 0.707 each; decks 1–2 only; at most one lane |
 
+`eq` is a DJ isolator: the deck is split into low / mid / high bands at 200 Hz and 2.5 kHz (Linkwitz–Riley 24 dB/oct), and each lane sets one band's gain. All bands at 0 dB sounds the same as no EQ. At most one lane per deck and band. `linear` interpolation is linear in dB. A band's cut is deepest well inside its range; near a crossover the neighbouring band still passes some of the signal (e.g. a -24 dB mid cut leaves 1 kHz about 19 dB down).
+
 ### Keyframe rules
 
 - `at` positions are **mix-time**.

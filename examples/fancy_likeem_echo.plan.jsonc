@@ -4,7 +4,9 @@
 // (schema 0.6; the M5 acceptance case). Needs your own copies of the tracks
 // in the git-ignored audio/ folder.
 //
-//   - Fancy and the Fancy → Like 'em All blend are unchanged.
+//   - Fancy and the Fancy → Like 'em All blend are unchanged, except a
+//     bass swap: Fancy's lows go to -24 dB over the 4 beats before Like
+//     'em All comes up in the drawn fade-in (eq lane, M5).
 //   - Like 'em All plays to its beat 160 (a downbeat) and echoes out there:
 //     its last beat repeats on the mix grid, each repeat half the last,
 //     fading out over 4 beats.
@@ -64,5 +66,13 @@
       "start_at": { "after": "likeem_end" },
       "duration": { "beats": 4 },
       "echo": { "every": { "beats": 1 }, "feedback": 0.5 } }
+  ],
+
+  "automation": [
+    { "lane": "eq", "deck": 1, "band": "low",
+      "keyframes": [
+        { "at": { "after": "fancy_end", "offset": { "beats": -19 } }, "value_db": 0 },
+        { "at": { "after": "fancy_end", "offset": { "beats": -15 } }, "value_db": -24 }
+      ] }
   ]
 }

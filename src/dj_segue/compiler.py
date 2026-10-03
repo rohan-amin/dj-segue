@@ -32,6 +32,7 @@ from typing import Literal
 from dj_segue.schema.plan import (
     CrossfaderLane,
     DeckVolumeLane,
+    EqLane,
     FloatKeyframe,
     LoopSegment,
     PlaySegment,
@@ -317,6 +318,29 @@ def keyframes_to_envelope(
         else:
             ramps.append(Ramp(s1, s2, v1, v2, interpolation))  # type: ignore[arg-type]
     return Envelope(initial=pts[0][1], ramps=tuple(ramps), source=source)
+
+
+def eq_envelope(
+    plan: Plan, deck: int, band: str, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> Envelope | None:
+    """A deck's EQ band gain in dB (0 = flat), or None without a lane for it.
+    `linear` interpolation is linear in dB. One lane per deck and band
+    (validator)."""
+    for i, lane in enumerate(plan.automation):
+        if isinstance(lane, EqLane) and lane.deck == deck and lane.band == band:
+            return keyframes_to_envelope(
+                [FloatKeyframe(at=kf.at, value=kf.value_db) for kf in lane.keyframes],
+                lane.interpolation,
+                mix_tempo,
+                f"automation[{i}] eq {band}",
+                default=0.0,
+                anchors=anchors,
+            )
+    return None
+
+
+def eq_decks(plan: Plan) -> set[int]:
+    return {lane.deck for lane in plan.automation if isinstance(lane, EqLane)}
 
 
 def deck_volume_envelopes(

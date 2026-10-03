@@ -1,9 +1,13 @@
 """Native audio engine — offline WAV render and live sounddevice playback.
 
-Supported: `play`/`loop`/`silence` segments, `crossfade`/`cut` transitions,
-and `deck_volume`/`crossfader` automation. Anything else in a plan (stem_volume,
-eq, vocal_handoff, stem-based tracks) raises NotImplementedError naming the
-milestone that adds it — the engine never silently ignores part of a plan.
+Supported: `play`/`loop`/`silence` segments, `crossfade`/`cut`/`echo_out`
+transitions, and `deck_volume`/`crossfader`/`eq` automation. Anything else in
+a plan (stem_volume, vocal_handoff, stem-based tracks) raises
+NotImplementedError naming the milestone that adds it — the engine never
+silently ignores part of a plan.
+
+EQ (eq.py): a deck with `eq` lanes is split once into three bands; the lanes
+scale the bands per sample.
 
 Single sample rate (mismatched tracks error out). A play segment with
 `target_bpm` is time-stretched (pitch preserved) by target / track tempo;
@@ -42,7 +46,7 @@ import os
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -54,16 +58,18 @@ from dj_segue.compiler import (
     crossfader_envelope,
     crossfader_gains,
     deck_volume_envelopes,
+    eq_decks,
+    eq_envelope,
     resolve_timeline,
     transition_envelopes,
 )
 from dj_segue.executor.base import MixExecutor, RenderResult
 from dj_segue.executor.native.curves import render_envelope
+from dj_segue.executor.native.eq import split_bands
 from dj_segue.executor.native.limiter import context_samples as limiter_context
 from dj_segue.executor.native.limiter import limit
 from dj_segue.executor.native.stretch import time_stretch
 from dj_segue.schema.plan import (
-    EqLane,
     Plan,
     StemVolumeLane,
     TransitionSegment,
@@ -84,6 +90,10 @@ class Tail:
     samples: np.ndarray  # (n, 2) float32
 
 
+# deck → (low, mid, high) per-sample linear gains (eq.py).
+EqGains = dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]
+
+
 @dataclass(frozen=True)
 class DeckRender:
     """Each deck's audio before gain, on the mix's sample clock."""
@@ -93,6 +103,31 @@ class DeckRender:
     total_samples: int
     mix_tempo: float
     timeline: Timeline
+    # Decks with EQ: their `decks` entry is the band sum; these are the
+    # (low, high) bands (eq.split_bands).
+    bands: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+
+    def signal(
+        self,
+        deck: int,
+        gains: dict[int, np.ndarray],
+        eq: EqGains | None,
+        start: int,
+        end: int,
+    ) -> np.ndarray:
+        """What `deck` contributes to the mix over [start, end) — after its
+        EQ and gain — zero outside the mix."""
+        out = np.zeros((end - start, 2), dtype=np.float32)
+        lo, hi = max(0, start), min(self.total_samples, end)
+        if hi <= lo:
+            return out
+        x = self.decks[deck][lo:hi]
+        if eq is not None and deck in eq:
+            g_low, g_mid, g_high = (g[lo:hi, None] for g in eq[deck])
+            low, high = (b[lo:hi] for b in self.bands[deck])
+            x = x * g_mid + low * (g_low - g_mid) + high * (g_high - g_mid)
+        out[lo - start : hi - start] = x * gains[deck][lo:hi, None]
+        return out
 
     def mix(
         self,
@@ -100,18 +135,19 @@ class DeckRender:
         start: int = 0,
         end: int | None = None,
         *,
+        eq: EqGains | None = None,
         tails: list[Tail] = (),
         limited: bool = True,
     ) -> np.ndarray:
-        """Sum of the decks times their gains, plus `tails`, over samples
+        """Sum of the decks after EQ and gain, plus `tails`, over samples
         [start, end), through the master limiter — the same samples a full
         render has."""
         end = self.total_samples if end is None else end
         before, after = limiter_context(self.sample_rate) if limited else (0, 0)
         lo, hi = max(0, start - before), min(self.total_samples, end + after)
         out = np.zeros((hi - lo, 2), dtype=np.float32)
-        for deck, buf in self.decks.items():
-            out += buf[lo:hi] * gains[deck][lo:hi, None]
+        for deck in self.decks:
+            out += self.signal(deck, gains, eq, lo, hi)
         for t in tails:
             a, b = max(lo, t.start), min(hi, t.start + len(t.samples))
             if b > a:
@@ -155,9 +191,10 @@ class NativeEngine(MixExecutor):
                 sample_rate=parts.sample_rate,
             )
         gains = self.deck_gains(plan, parts)
-        tails = self.echo_tails(plan, parts, gains)
+        eq = self.deck_eq(plan, parts)
+        tails = self.echo_tails(plan, parts, gains, eq=eq)
         return RenderResult(
-            samples=parts.mix(gains, tails=tails, limited=self.limited),
+            samples=parts.mix(gains, eq=eq, tails=tails, limited=self.limited),
             sample_rate=parts.sample_rate,
         )
 
@@ -240,7 +277,13 @@ class NativeEngine(MixExecutor):
                     lead, rising=False
                 )[:, None]
             buf[c.mix_start_sample - lead : c.mix_end_sample] += audio
-        return DeckRender(deck_buffers, sample_rate, total_samples, mix_tempo, timeline)
+
+        bands: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        for deck in sorted(eq_decks(plan) & set(deck_buffers)):
+            total, low, high = split_bands(deck_buffers[deck], sample_rate)
+            deck_buffers[deck] = total
+            bands[deck] = (low, high)
+        return DeckRender(deck_buffers, sample_rate, total_samples, mix_tempo, timeline, bands)
 
     def deck_gains(
         self, plan: Plan, parts: "DeckRender", anchors: dict[str, float] | None = None
@@ -255,6 +298,25 @@ class NativeEngine(MixExecutor):
             parts.total_samples,
             parts.timeline.anchors if anchors is None else anchors,
         )
+
+    def deck_eq(
+        self, plan: Plan, parts: "DeckRender", anchors: dict[str, float] | None = None
+    ) -> EqGains:
+        """Per-sample (low, mid, high) gains for each deck `parts` split into
+        bands. A band without a lane stays at 0 dB."""
+        anchors = parts.timeline.anchors if anchors is None else anchors
+        out: EqGains = {}
+        for deck in parts.bands:
+            per_band = []
+            for band in ("low", "mid", "high"):
+                env = eq_envelope(plan, deck, band, parts.mix_tempo, anchors)
+                if env is None:
+                    per_band.append(np.ones(parts.total_samples, dtype=np.float32))
+                else:
+                    db = render_envelope(env, parts.sample_rate, parts.total_samples)
+                    per_band.append((10.0 ** (db / 20.0)).astype(np.float32))
+            out[deck] = tuple(per_band)
+        return out
 
     def render_to_wav(
         self,
@@ -288,13 +350,16 @@ class NativeEngine(MixExecutor):
         parts: "DeckRender",
         gains: dict[int, np.ndarray],
         anchors: dict[str, float] | None = None,
+        *,
+        eq: EqGains | None = None,
     ) -> list[Tail]:
-        """Each echo_out's repeats, from its from_deck's audio after `gains`."""
+        """Each echo_out's repeats, from its from_deck's audio after EQ and
+        `gains` (what was audible)."""
         anchors = parts.timeline.anchors if anchors is None else anchors
         tails = []
         for deck, w in _echo_windows(plan, parts.mix_tempo, anchors, with_deck=True):
             if deck in parts.decks:
-                tails.append(_echo_tail(parts.decks[deck], gains[deck], w, parts.sample_rate))
+                tails.append(_echo_tail(parts, deck, gains, eq, w))
         return tails
 
     # ------------------------------------------------------------------
@@ -313,10 +378,6 @@ class NativeEngine(MixExecutor):
             if isinstance(lane, StemVolumeLane):
                 raise NotImplementedError(
                     f"automation[{i}]: stem_volume lanes are M3 scope (stems)"
-                )
-            if isinstance(lane, EqLane):
-                raise NotImplementedError(
-                    f"automation[{i}]: eq lanes are M5 scope (EQ and filters)"
                 )
 
     def _load_all_tracks(
@@ -473,7 +534,9 @@ def _echo_windows(plan: Plan, mix_tempo: float, anchors: dict[str, float], with_
             yield (seg.from_deck, w) if with_deck else w
 
 
-def _echo_tail(buf: np.ndarray, gain: np.ndarray, w: EchoWindow, sample_rate: int) -> Tail:
+def _echo_tail(
+    parts: DeckRender, deck: int, gains: dict[int, np.ndarray], eq: EqGains | None, w: EchoWindow
+) -> Tail:
     """Repeats of the `every` before the cut, as a loop would play them.
 
     The tail starts one seam before the cut: there it fades in the first
@@ -481,7 +544,7 @@ def _echo_tail(buf: np.ndarray, gain: np.ndarray, w: EchoWindow, sample_rate: in
     (with the dry gain stepping to 0 at the cut) fades the dry out — the
     same pre-boundary crossfade as a loop seam.
     """
-    sr = sample_rate
+    sr = parts.sample_rate
     seam = int(round(LOOP_SEAM_SEC * sr))
     cut = int(round(w.cut_sec * sr))
     end = int(round(w.end_sec * sr))
@@ -491,12 +554,9 @@ def _echo_tail(buf: np.ndarray, gain: np.ndarray, w: EchoWindow, sample_rate: in
         reps.append(r)
     reps.append(end)
 
-    # What the deck played (after gain) from one seam before the captured
-    # `every` up to the cut.
-    lo = cut - every - seam
-    cap = _read_padded(buf, lo, every + seam) * _read_padded(
-        gain[:, None], lo, every + seam
-    )
+    # What the deck played (after EQ and gain) from one seam before the
+    # captured `every` up to the cut.
+    cap = parts.signal(deck, gains, eq, cut - every - seam, cut)
 
     out = np.zeros((end - (cut - seam), 2), dtype=np.float64)
     base = cut - seam

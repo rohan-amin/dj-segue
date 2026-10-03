@@ -146,13 +146,6 @@ def test_exponential_deck_volume_fade(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_eq_lane_is_rejected(tmp_path) -> None:
-    eq = {"lane": "eq", "deck": 1, "band": "low",
-          "keyframes": [{"at": {"beat": 0}, "value_db": -6}]}
-    with pytest.raises(NotImplementedError, match="M5"):
-        _render(_plan(tmp_path, [_play(1, "one")], [eq]), tmp_path)
-
-
 def test_stem_volume_lane_is_rejected(tmp_path) -> None:
     sv = {"lane": "stem_volume", "deck": 1, "stem": "vocals",
           "keyframes": [{"at": {"beat": 0}, "value": 0.0}]}

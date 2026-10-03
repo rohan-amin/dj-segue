@@ -71,6 +71,7 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
     issues.extend(_check_vocal_handoff_requirements(plan))
     issues.extend(_check_transitions(plan, mix_tempo, anchors))
     issues.extend(_check_single_crossfader(plan))
+    issues.extend(_check_eq_lanes(plan))
     if issues:
         raise PlanValidationError(issues)
 
@@ -575,6 +576,33 @@ def _check_transitions(
                 issues.append(
                     f"deck {deck}: faded {verb} by {l1} and again by {l2} "
                     f"with no opposite transition in between"
+                )
+    return issues
+
+
+# The `eq` lane's range (schema "Lane types").
+EQ_MIN_DB, EQ_MAX_DB = -24.0, 12.0
+
+
+def _check_eq_lanes(plan: Plan) -> list[str]:
+    """EQ values within EQ_MIN_DB..EQ_MAX_DB; one lane per deck and band."""
+    issues: list[str] = []
+    seen: dict[tuple[int, str], int] = {}
+    for i, lane in enumerate(plan.automation):
+        if not isinstance(lane, EqLane):
+            continue
+        key = (lane.deck, lane.band)
+        if key in seen:
+            issues.append(
+                f"automation[{i}]: a second eq lane for deck {lane.deck} band "
+                f"{lane.band!r} (first is automation[{seen[key]}])"
+            )
+        seen.setdefault(key, i)
+        for j, kf in enumerate(lane.keyframes):
+            if not EQ_MIN_DB <= kf.value_db <= EQ_MAX_DB:
+                issues.append(
+                    f"automation[{i}].keyframes[{j}]: eq value_db {kf.value_db:g} is "
+                    f"outside {EQ_MIN_DB:g} to {EQ_MAX_DB:+g} dB"
                 )
     return issues
 
