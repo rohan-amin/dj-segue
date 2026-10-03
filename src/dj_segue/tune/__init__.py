@@ -287,7 +287,8 @@ class TuneSession:
         it = self.item(index)
         anchors = resolve_timeline(plan, self.parts.mix_tempo, self.grids).anchors
         gains = self.engine.deck_gains(plan, self.parts, anchors)
-        mixed = self.parts.mix(gains, it.start, it.end)
+        tails = self.engine.echo_tails(plan, self.parts, gains, anchors)
+        mixed = self.parts.mix(gains, it.start, it.end, tails=tails)
         buf = io.BytesIO()
         sf.write(buf, mixed, self.parts.sample_rate, format="WAV", subtype="FLOAT")
         with self._lock:

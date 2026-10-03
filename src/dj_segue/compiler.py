@@ -46,6 +46,7 @@ from dj_segue.time_math import (
     duration_to_seconds,
     mix_pos_to_seconds,
     track_pos_to_seconds,
+    echo_window,
     transition_windows,
 )
 
@@ -223,9 +224,12 @@ def resolve_timeline(
     for i, seg in enumerate(plan.timeline):
         if isinstance(seg, TransitionSegment):
             if seg.id is not None:
-                # A transition ends when its later side does.
+                # A transition ends when its later side (or echo tail) does.
                 out_w, in_w = transition_windows(seg, mix_tempo, anchors)
-                anchors[seg.id] = max(out_w.end_sec, in_w.end_sec)
+                end = max(out_w.end_sec, in_w.end_sec)
+                if seg.style == "echo_out":
+                    end = max(end, echo_window(seg, mix_tempo, anchors).end_sec)
+                anchors[seg.id] = end
             continue
         if isinstance(seg, SilenceSegment):
             start = cursor.get(seg.deck, 0.0)

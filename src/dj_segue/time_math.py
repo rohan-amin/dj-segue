@@ -164,6 +164,10 @@ def transition_windows(
     A cut is a zero-length step at `start_at`. A crossfade's sides default to
     `start_at` + `duration` with `curve` (equal_power); v0.4 `out` / `in`
     override offset, duration and curve per side.
+
+    An echo_out (v0.6) cuts the dry from_deck at `start_at` (its echo tail is
+    `echo_window`); the to_deck comes in on the cut unless `in` gives it a
+    fade (`duration` there defaults to 0, not the tail length).
     """
     start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
     if seg.style == "cut":
@@ -171,12 +175,41 @@ def transition_windows(
         return w, w
     duration = duration_to_seconds(seg.duration, mix_tempo)
     curve = seg.curve or "equal_power"
+    echo = seg.style == "echo_out"
+    if echo:
+        duration = 0.0  # the default `in`: a step on the cut
 
     def side(o) -> FadeWindow:
-        if o is None:
-            return FadeWindow(start, start + duration, curve)
-        s = start + (duration_to_seconds(o.offset, mix_tempo) if o.offset else 0.0)
-        d = duration_to_seconds(o.duration, mix_tempo) if o.duration else duration
-        return FadeWindow(s, s + d, o.curve or curve)
+        s, d, c = start, duration, curve
+        if o is not None:
+            s += duration_to_seconds(o.offset, mix_tempo) if o.offset else 0.0
+            d = duration_to_seconds(o.duration, mix_tempo) if o.duration else duration
+            c = o.curve or curve
+        return FadeWindow(s, s + d, "step" if echo and d == 0 else c)
 
+    if seg.style == "echo_out":
+        return FadeWindow(start, start, "step"), side(seg.in_)
     return side(seg.out), side(seg.in_)
+
+
+@dataclass(frozen=True)
+class EchoWindow:
+    """An echo_out's tail (v0.6), in mix seconds: repeats of the `every_sec`
+    before `cut_sec`, from the cut until `end_sec`."""
+
+    cut_sec: float
+    every_sec: float
+    end_sec: float
+    feedback: float
+
+
+def echo_window(
+    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> EchoWindow:
+    cut = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+    return EchoWindow(
+        cut,
+        duration_to_seconds(seg.echo.every, mix_tempo),
+        cut + duration_to_seconds(seg.duration, mix_tempo),
+        seg.echo.feedback,
+    )

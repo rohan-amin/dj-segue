@@ -11,9 +11,11 @@
       (offset, duration, curve). Rejected in plans that declare 0.1–0.3.
 0.5 — additive: drawn curves on a crossfade side (`curve: {points, smooth}`).
       Rejected in plans that declare 0.1–0.4.
+0.6 — additive: `echo_out` transitions (`echo: {every, feedback}`; optional
+      `in`). Rejected in plans that declare 0.1–0.5.
 """
 
 from __future__ import annotations
 
-CURRENT_SCHEMA_VERSION = "0.5"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5"})
+CURRENT_SCHEMA_VERSION = "0.6"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"})

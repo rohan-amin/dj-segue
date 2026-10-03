@@ -144,6 +144,11 @@ def _write_timeline(
             start = _fmt_mix_position(seg.start_at, mix_tempo, anchors)
             dur = _fmt_duration(seg.duration)
             shaping = f"  curve={seg.curve}" if seg.curve else ""
+            if seg.echo is not None:
+                shaping += (
+                    f"  echo=(every {_fmt_duration(seg.echo.every)}, "
+                    f"feedback {seg.echo.feedback:g})"
+                )
             for name, side in (("out", seg.out), ("in", seg.in_)):
                 if side is not None:
                     shaping += f"  {name}=({_fmt_side(side)})"

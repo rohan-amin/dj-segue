@@ -25,6 +25,13 @@ just before its `from`.
 Per-deck gain = product of: transition envelope × deck_volume lanes ×
 crossfader gain (decks 1–2 only). All come from dj_segue.compiler.
 
+Echo out (v0.6): the dry from_deck cuts at `start_at` and its last `every`
+before the cut repeats like a loop — same pre-boundary seams, the first one
+crossfading out of the dry audio — each repeat `feedback` times the last,
+with a linear fade over the final `every` to silence at the tail's end. The
+repeats are taken after the deck's gain (what was audible) and mixed as
+separate `Tail`s, so they ring on after the deck stops.
+
 The summed mix goes through the master limiter (limiter.py), which holds
 sample peaks to -1 dBFS and leaves mixes below that untouched.
 """
@@ -62,11 +69,19 @@ from dj_segue.schema.plan import (
     TransitionSegment,
 )
 from dj_segue.schema.validator import resolved_mix_tempo
-from dj_segue.time_math import TrackGrid
+from dj_segue.time_math import EchoWindow, TrackGrid, echo_window
 
 
 # Loop / jump seam crossfade length (seconds of mix time).
 LOOP_SEAM_SEC = 0.003
+
+
+@dataclass(frozen=True)
+class Tail:
+    """Audio laid on the mix outside any deck's gain (an echo_out's repeats)."""
+
+    start: int  # mix sample of samples[0]
+    samples: np.ndarray  # (n, 2) float32
 
 
 @dataclass(frozen=True)
@@ -85,16 +100,22 @@ class DeckRender:
         start: int = 0,
         end: int | None = None,
         *,
+        tails: list[Tail] = (),
         limited: bool = True,
     ) -> np.ndarray:
-        """Sum of the decks times their gains over samples [start, end),
-        through the master limiter — the same samples a full render has."""
+        """Sum of the decks times their gains, plus `tails`, over samples
+        [start, end), through the master limiter — the same samples a full
+        render has."""
         end = self.total_samples if end is None else end
         before, after = limiter_context(self.sample_rate) if limited else (0, 0)
         lo, hi = max(0, start - before), min(self.total_samples, end + after)
         out = np.zeros((hi - lo, 2), dtype=np.float32)
         for deck, buf in self.decks.items():
             out += buf[lo:hi] * gains[deck][lo:hi, None]
+        for t in tails:
+            a, b = max(lo, t.start), min(hi, t.start + len(t.samples))
+            if b > a:
+                out[a - lo : b - lo] += t.samples[a - t.start : b - t.start]
         if limited:
             out = limit(out, self.sample_rate)
         return out[start - lo : end - lo]
@@ -134,8 +155,10 @@ class NativeEngine(MixExecutor):
                 sample_rate=parts.sample_rate,
             )
         gains = self.deck_gains(plan, parts)
+        tails = self.echo_tails(plan, parts, gains)
         return RenderResult(
-            samples=parts.mix(gains, limited=self.limited), sample_rate=parts.sample_rate
+            samples=parts.mix(gains, tails=tails, limited=self.limited),
+            sample_rate=parts.sample_rate,
         )
 
     def render_decks(
@@ -150,7 +173,8 @@ class NativeEngine(MixExecutor):
         `on_progress(done, total)` is called as segments finish (from worker
         threads).
 
-        `render` = `render_decks` → `deck_gains` → `DeckRender.mix`; the tune
+        `render` = `render_decks` → `deck_gains` → `echo_tails` →
+        `DeckRender.mix`; the tune
         page uses the same steps so it plays exactly what `render` produces.
         """
         self._check_supported(plan)
@@ -166,6 +190,8 @@ class NativeEngine(MixExecutor):
         timeline = resolve_timeline(plan, mix_tempo, grids)
         compiled = self._compile_play_segments(timeline.spans, sample_rate)
         total_samples = max((c.mix_end_sample for c in compiled), default=0)
+        for w in _echo_windows(plan, mix_tempo, timeline.anchors):
+            total_samples = max(total_samples, int(round(w.end_sec * sample_rate)))
 
         # Seams first (they depend on each deck's previous segment), then all
         # segments' audio at once — stretching runs in rubberband processes,
@@ -256,6 +282,21 @@ class NativeEngine(MixExecutor):
         sd.play(result.samples, samplerate=result.sample_rate, blocking=True)
         return result
 
+    def echo_tails(
+        self,
+        plan: Plan,
+        parts: "DeckRender",
+        gains: dict[int, np.ndarray],
+        anchors: dict[str, float] | None = None,
+    ) -> list[Tail]:
+        """Each echo_out's repeats, from its from_deck's audio after `gains`."""
+        anchors = parts.timeline.anchors if anchors is None else anchors
+        tails = []
+        for deck, w in _echo_windows(plan, parts.mix_tempo, anchors, with_deck=True):
+            if deck in parts.decks:
+                tails.append(_echo_tail(parts.decks[deck], gains[deck], w, parts.sample_rate))
+        return tails
+
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
@@ -266,7 +307,7 @@ class NativeEngine(MixExecutor):
             if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
                 raise NotImplementedError(
                     f"timeline[{i}]: vocal_handoff transitions are M3 scope (stems); "
-                    f"the native engine supports crossfade and cut"
+                    f"the native engine supports crossfade, cut and echo_out"
                 )
         for i, lane in enumerate(plan.automation):
             if isinstance(lane, StemVolumeLane):
@@ -423,6 +464,63 @@ class NativeEngine(MixExecutor):
                 g *= xfade[deck]
             gains[deck] = g
         return gains
+
+
+def _echo_windows(plan: Plan, mix_tempo: float, anchors: dict[str, float], with_deck=False):
+    for seg in plan.timeline:
+        if isinstance(seg, TransitionSegment) and seg.style == "echo_out":
+            w = echo_window(seg, mix_tempo, anchors)
+            yield (seg.from_deck, w) if with_deck else w
+
+
+def _echo_tail(buf: np.ndarray, gain: np.ndarray, w: EchoWindow, sample_rate: int) -> Tail:
+    """Repeats of the `every` before the cut, as a loop would play them.
+
+    The tail starts one seam before the cut: there it fades in the first
+    repeat's pre-roll and subtracts a rising ramp of the dry audio, which
+    (with the dry gain stepping to 0 at the cut) fades the dry out — the
+    same pre-boundary crossfade as a loop seam.
+    """
+    sr = sample_rate
+    seam = int(round(LOOP_SEAM_SEC * sr))
+    cut = int(round(w.cut_sec * sr))
+    end = int(round(w.end_sec * sr))
+    every = int(round(w.every_sec * sr))
+    reps = []  # each repeat's first mix sample, then the tail's end
+    while (r := cut + int(round(len(reps) * w.every_sec * sr))) < end:
+        reps.append(r)
+    reps.append(end)
+
+    # What the deck played (after gain) from one seam before the captured
+    # `every` up to the cut.
+    lo = cut - every - seam
+    cap = _read_padded(buf, lo, every + seam) * _read_padded(
+        gain[:, None], lo, every + seam
+    )
+
+    out = np.zeros((end - (cut - seam), 2), dtype=np.float64)
+    base = cut - seam
+    rise = _ramp(seam, rising=True)[:, None]
+    out[:seam] -= cap[every:] * rise  # dry fades out into the first repeat
+    level = 1.0
+    for a, b in zip(reps, reps[1:]):
+        length = b - a
+        chunk = _read_padded(cap, 0, seam + length).astype(np.float64)
+        chunk[:seam] *= rise
+        f_out = min(seam, length // 2) if b < end else 0
+        if f_out:
+            chunk[-f_out:] *= _ramp(f_out, rising=False)[:, None]
+        out[a - seam - base : b - base] += chunk * level
+        level *= w.feedback
+    fade = min(every, end - cut)
+    if fade:
+        out[len(out) - fade :] *= _fade_to_zero(fade)[:, None]
+    return Tail(base, out.astype(np.float32))
+
+
+def _fade_to_zero(n: int) -> np.ndarray:
+    """Linear 1 → 0 over n samples, reaching 0 just after the last."""
+    return 1.0 - (np.arange(n, dtype=np.float64) + 1) / n
 
 
 def _needs_seam(prev: _CompiledPlay, c: _CompiledPlay) -> bool:

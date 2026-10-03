@@ -503,6 +503,7 @@ def _check_transitions(
       - from_deck and to_deck differ;
       - `cut` has zero duration (it's instantaneous — write {"beats": 0});
         `crossfade` has positive duration, on each side (v0.4 `out` / `in`);
+      - `echo_out` (v0.6) has a positive tail, and `echo.every` fits in it;
       - transitions touching the same deck don't overlap in time;
       - per deck, transitions alternate out/in: a deck can't be faded out
         twice without being faded back in (or vice versa).
@@ -530,8 +531,21 @@ def _check_transitions(
             issues.append(
                 f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'
             )
+        if seg.style == "echo_out":
+            every = time_math.duration_to_seconds(seg.echo.every, mix_tempo)
+            if duration <= 0:
+                issues.append(f"{label}: duration (the echo tail) must be positive")
+            if every <= 0:
+                issues.append(f"{label}: echo.every must be positive")
+            elif every > duration + 1e-9:
+                issues.append(
+                    f"{label}: echo.every is longer than the tail (duration); "
+                    f"no repeat would finish"
+                )
         if seg.style != "cut":
             for name, w in (("out", out_w), ("in", in_w)):
+                if w.curve == "step":
+                    continue  # echo_out's dry cut, or an `in` with no fade
                 if w.end_sec - w.start_sec <= 0:
                     issues.append(f"{label}: {name} fade duration must be positive")
                 elif not isinstance(w.curve, str):
