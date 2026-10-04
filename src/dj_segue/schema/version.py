@@ -20,9 +20,12 @@
       `stem_volume` lanes and `vocal_handoff` work on them; an eq lane's
       `stem`; a vocal_handoff's `swap_at`, `curve`, `out` / `in`. Rejected in
       plans that declare 0.1–0.7.
+0.9 — additive: `meta.tempo_map` (the mix tempo changes partway: steps and
+      ramps; `target_bpm: "mix"` segments follow it). Rejected in plans that
+      declare 0.1–0.8.
 """
 
 from __future__ import annotations
 
-CURRENT_SCHEMA_VERSION = "0.8"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"})
+CURRENT_SCHEMA_VERSION = "0.9"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"})

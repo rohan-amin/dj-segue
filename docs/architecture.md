@@ -191,6 +191,6 @@ Python 3.11+. We use match statements, `typing.Self`, modern type hints througho
 
 ## Open questions (revisit before locking)
 
-**Tempo map (raised 2026-09-30, deferred 2026-10-04).** The real-time engine is settled (above); what's left of that question is changing the mix tempo partway through (e.g. Bottoms Up taking over the clock after an echo out): a tempo map in `time_math` in place of the single mix tempo, and a schema change. Next session, with live playback in the tune page.
+**Live playback in tune (raised 2026-09-30).** The tempo map is settled (schema v0.9, 2026-10-04). What's left is the tune page playing the whole mix live, with edits applied while it plays, in place of an excerpt WAV per edit.
 
 **Memory.** Offline, every deck (and stem) is held full-length; the live engine also keeps full-length mix buffers. Fine for a 10-minute mix; a long set would want rolling buffers.

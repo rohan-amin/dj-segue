@@ -60,8 +60,12 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
     the tempo to compare positions are skipped; callers that render (the
     `play` CLI) re-run validation with grids after preprocessing.
     """
-    mix_tempo = resolved_mix_tempo(plan, grids)
     issues: list[str] = []
+    try:
+        mix_tempo = resolved_tempo(plan, grids)
+    except (ValueError, TypeError, KeyError) as e:
+        issues.append(f"meta.tempo_map: {e}")
+        mix_tempo = None
     issues.extend(_check_track_references(plan))
     issues.extend(_check_deck_references(plan))
     issues.extend(_check_cue_references(plan))
@@ -80,7 +84,7 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
 
 
 def _try_anchors(
-    plan: Plan, mix_tempo: float | None, grids: dict[str, time_math.TrackGrid] | None
+    plan: Plan, mix_tempo: "time_math.TempoMap | None", grids: dict[str, time_math.TrackGrid] | None
 ) -> dict[str, float] | None:
     """Segment-id → mix end seconds, or None when timing can't be resolved yet
     (auto tempo before preprocessing). Checks that need an unresolvable
@@ -120,6 +124,74 @@ def resolved_mix_tempo(
     return None
 
 
+def resolved_tempo(
+    plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None
+) -> "time_math.TempoMap | None":
+    """The plan's mix tempo map (v0.9): `resolved_mix_tempo` to start, then
+    each `meta.tempo_map` change. None when it isn't known yet: the
+    starting tempo is auto-detected (as `resolved_mix_tempo`), or a change
+    at an `after` position needs track grids that weren't given.
+
+    Changes resolve in order, each with the changes before it in place, so
+    a change's beat position counts through the earlier ones. An `after`
+    position needs the timeline, which itself depends on the tempo: it's
+    resolved with the map so far, and the final map must put it in the same
+    place (otherwise the change would move itself, and it's an error).
+    Raises ValueError for changes out of order or overlapping a ramp.
+    """
+    start = resolved_mix_tempo(plan, grids)
+    if start is None:
+        return None
+    tm = time_math.TempoMap.fixed(start)
+    changes = plan.meta.tempo_map
+    if not changes:
+        return tm
+    from dj_segue.compiler import resolve_timeline  # compiler imports schema.plan
+
+    def at_sec(change, tempo) -> float:
+        if isinstance(change.at, CuePos):
+            raise ValueError(f"cue {change.at.cue!r} is a track position; use a mix position")
+        anchors = None
+        if isinstance(change.at, AfterPos):
+            try:
+                anchors = resolve_timeline(plan, tempo, grids).anchors
+            except (ValueError, TypeError, KeyError):
+                if not grids:
+                    raise _NeedsGrids from None
+                raise
+        return time_math.mix_pos_to_seconds(change.at, tempo, anchors)
+
+    starts = []
+    for k, change in enumerate(changes):
+        try:
+            at = at_sec(change, tm)
+        except _NeedsGrids:
+            return None
+        starts.append(at)
+        ramp = 0.0
+        if change.ramp is not None:
+            ramp = time_math.ramp_seconds(change.ramp, tm.bpm_at(at), change.bpm)
+            if ramp <= 0:
+                raise ValueError(f"[{k}]: ramp must be positive (omit it for a step)")
+        try:
+            tm = tm.with_change(at, change.bpm, ramp)
+        except ValueError as e:
+            raise ValueError(f"[{k}]: {e}") from None
+    for k, change in enumerate(changes):
+        if isinstance(change.at, AfterPos):
+            if abs(at_sec(change, tm) - starts[k]) > 1e-6:
+                raise ValueError(
+                    f"[{k}]: its `after` position moves when the tempo changes "
+                    f"(segment {change.at.after!r} ends after this change, so "
+                    f"it depends on it); use a beat position"
+                )
+    return tm
+
+
+class _NeedsGrids(Exception):
+    """The timeline can't be resolved before preprocessing."""
+
+
 def tempo_track(plan: Plan) -> str | None:
     """The track that sets the default mix tempo: the first one a play or
     loop segment uses, in timeline order (else the first declared track)."""
@@ -130,18 +202,19 @@ def tempo_track(plan: Plan) -> str | None:
 
 
 def position_to_mix_beats(
-    pos: Any, mix_tempo: float, anchors: dict[str, float] | None = None
+    pos: Any, mix_tempo: "time_math.TempoMap | float", anchors: dict[str, float] | None = None
 ) -> float:
     """Convert a mix-time position to mix-beats. Assumes 4/4 for bars.
     `after` positions need `anchors` (and the tempo)."""
     if isinstance(pos, AfterPos):
-        return time_math.mix_pos_to_seconds(pos, mix_tempo, anchors) * mix_tempo / 60.0
+        sec = time_math.mix_pos_to_seconds(pos, mix_tempo, anchors)
+        return time_math.as_tempo(mix_tempo).sec_to_beat(sec)
     if isinstance(pos, BeatPos):
         return pos.beat
     if isinstance(pos, BarPos):
         return pos.bar * 4.0
     if isinstance(pos, SecondPos):
-        return pos.second * mix_tempo / 60.0
+        return time_math.as_tempo(mix_tempo).sec_to_beat(pos.second)
     if isinstance(pos, CuePos):
         raise ValueError(f"Cue references are not valid in mix-time context: {pos!r}")
     raise TypeError(f"Unknown position type: {type(pos).__name__}")
@@ -343,7 +416,7 @@ def stem_decks(plan: Plan) -> set[int]:
 
 
 def _check_keyframe_ordering(
-    plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None = None
+    plan: Plan, mix_tempo: "time_math.TempoMap | None", anchors: dict[str, float] | None = None
 ) -> list[str]:
     issues: list[str] = []
     for i, lane in enumerate(plan.automation):
@@ -468,7 +541,10 @@ def _check_no_deck_overlap(
     """
     from dj_segue.compiler import timeline_spans  # compiler imports schema.plan
 
-    mix_tempo = resolved_mix_tempo(plan, grids)
+    try:
+        mix_tempo = resolved_tempo(plan, grids)
+    except (ValueError, TypeError, KeyError) as e:
+        return [f"meta.tempo_map: {e}"]
     if mix_tempo is None:
         return ["mix tempo is unknown: first track's bpm is auto-detected but no grids were given"]
     try:
@@ -526,7 +602,7 @@ MIN_POINT_GAP_SEC = 0.002
 
 
 def _check_transitions(
-    plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None = None
+    plan: Plan, mix_tempo: "time_math.TempoMap | None", anchors: dict[str, float] | None = None
 ) -> list[str]:
     """
     Transition sanity (audio-free; all positions are mix-time):
@@ -551,7 +627,8 @@ def _check_transitions(
         if mix_tempo is None:
             continue  # timing checks need the tempo; re-checked after preprocess
         try:
-            duration = time_math.duration_to_seconds(seg.duration, mix_tempo)
+            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+            duration = time_math.mix_duration(start, seg.duration, mix_tempo)
             out_w, in_w = time_math.transition_windows(seg, mix_tempo, anchors)
         except (ValueError, TypeError):
             # cue-in-mix-time is reported elsewhere; an `after` that can't be
@@ -563,11 +640,10 @@ def _check_transitions(
             )
         if seg.style == "vocal_handoff":
             swap = time_math.handoff_swap(seg, mix_tempo, anchors)
-            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
             if not start - 1e-9 <= swap <= start + duration + 1e-9:
                 issues.append(f"{label}: swap_at must be within the transition's duration")
         if seg.style == "echo_out":
-            every = time_math.duration_to_seconds(seg.echo.every, mix_tempo)
+            every = time_math.echo_window(seg, mix_tempo, anchors).every_sec
             if duration <= 0:
                 issues.append(f"{label}: duration (the echo tail) must be positive")
             if every <= 0:

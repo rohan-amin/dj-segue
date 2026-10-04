@@ -130,7 +130,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 ---
 
-## M3 — Stems
+## M3 — Stems  (DONE 2026-10-03 except the acceptance test)
 
 **Goal:** Vocal-aware transitions.
 
@@ -142,7 +142,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 **Done 2026-10-03 (schema v0.8):** automatic separation of `path` tracks (demucs `htdemucs_ft`, `.[stems]` extra; cached in `.cache/stems`; "other" absorbs the residual so stems sum to the track) instead of hand-made `.npy` files; explicit `stems` still work. `stem_volume` lanes; `vocal_handoff` (instrumentals crossfade, vocals swap at `swap_at` with a 10 ms crossover); per-stem EQ (`eq` lane `stem`, pulled in from M5). Only decks mixed by stems render by stem.
 
-**Acceptance test:** A wordplay-style transition where one track's vocals end on a word and the other track's vocals start on the same word, with drums continuing under the transition.
+**Acceptance test** (on hold 2026-10-04 until word timings exist; see M6)**:** A wordplay-style transition where one track's vocals end on a word and the other track's vocals start on the same word, with drums continuing under the transition.
 
 ---
 
@@ -150,7 +150,19 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 Pulled forward from the architecture's open question. One engine, run block by block: live playback is computed ~0.4 s ahead of the speakers and is bitwise identical to an offline render (tested: random block sizes, ring buffer through the real callback). Rubber Band library (streaming, ctypes) replaces the CLI; the stretch cache is gone. `play` starts at once; `--from BEAT`; `--watch` applies plan edits while playing (new engine ~0.3 s past what's queued, 20 ms crossfade). All renders changed once (inaudibly) with the new stretcher.
 
-**Next (R2):** tempo map (the mix clock changing tempo; schema change), and live playback in the tune page (play the whole mix, edits applied as you drag).
+---
+
+## R2 — Tempo map and live playback in tune  (NEXT, agreed 2026-10-04)
+
+**Goal:** The mix clock can change tempo partway through, and the tune page plays the whole mix live.
+
+**Scope in:**
+- Tempo map: the mix tempo changes partway (e.g. Bottoms Up takes over at 74 after the echo out). Schema change (likely `meta.tempo_map` or a per-segment "take the clock"; draft for the user first); `time_math` positions through the map; engine and tune follow it.
+- Tune page plays the whole mix through the LiveEngine: seek on cursor click, edits applied a moment ahead while it plays, in place of re-rendering an excerpt WAV per edit.
+
+**Acceptance test:** Like 'em All echoes out into Bottoms Up, and the mix clock moves to 74 BPM so Bottoms Up plays at native tempo for the rest of the mix. In tune, dragging a transition while the mix plays is heard within a moment, with no gap.
+
+**Tempo map done 2026-10-04 (schema v0.9):** `meta.tempo_map` with steps and ramps (linear in time); mix beats count through it; `target_bpm: "mix"` segments and loops follow it (Rubber Band with a changing ratio; beats within 1.2 ms after a step, 0.6 ms through a ramp at 44.1 kHz); live == offline still bit for bit; plans without a map render unchanged. Tune counts beats through the map. Acceptance mix: `examples/fancy_likeem_echo74.plan.jsonc` (Bottoms Up unstretched at 74). Still open: live playback in tune.
 
 ---
 
@@ -169,11 +181,12 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 ---
 
-## M6 — The planner  (DEFERRED 2026-09-29: general mixing first)
+## M6 — Word timing and the planner  (word timing next after R2, agreed 2026-10-04; planner DEFERRED 2026-09-29)
 
-**Goal:** AI-generated plans from English.
+**Goal:** Word-level timing for every track, then AI-generated plans from English.
 
 **Scope in:**
+- **Word timing first** (unblocks M3's acceptance test): Whisper word timestamps on the vocals stem, cached per track; plan word cues such as `{ "word": "up", "nth": 2 }` that resolve to a time.
 - Lyrics ingestion (LRCLIB or Genius-with-alignment).
 - Wordplay candidate detection (exact, phonetic, rhyme, semantic).
 - LLM-based candidate ranking with tool use.
@@ -204,6 +217,6 @@ Pulled forward from the architecture's open question. One engine, run block by b
 - Plan diffing and remixing
 - Web UI for plan visualization
 - Real-time stem separation (currently offline-only)
-- Real-time tempo control (currently fixed-tempo)
+- Real-time tempo control (planned tempo changes move to R2's tempo map; this means changing tempo live)
 
 These are not on the v0.x roadmap but are good ideas for v1.x.

@@ -146,7 +146,7 @@ def play(
 
     cache: dict = {}  # track audio, kept across reloads
     p = prepare(plan, audio_root, grids, audio_cache=cache)
-    start = int(round(from_beat * 60.0 / p.mix_tempo * p.sample_rate))
+    start = int(round(p.mix_tempo.beat_to_sec(from_beat) * p.sample_rate))
     live = LiveEngine(p, start=start)
 
     def rebuild(at: int) -> LiveEngine:

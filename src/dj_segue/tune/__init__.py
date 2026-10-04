@@ -56,8 +56,8 @@ from dj_segue.schema.plan import (
     TransitionSegment,
 )
 from dj_segue.time_math import (
+    TempoMap,
     TrackGrid,
-    duration_to_seconds,
     echo_window,
     handoff_swap,
     mix_pos_to_seconds,
@@ -67,7 +67,7 @@ from dj_segue.time_math import (
 CURVES = ("equal_power", "linear", "exponential")
 STYLES = ("crossfade", "echo_out", "vocal_handoff")
 PARAMS = ("low", "mid", "high", "filter")  # the lanes the page edits per deck
-VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8")
+VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9")
 CONTEXT_BEATS = 16  # shown either side of a transition
 PEAK_BUCKETS = 2400
 GAIN_RATE = 100  # Hz, for drawing the gain curves
@@ -124,9 +124,21 @@ class TuneSession:
     # -- time ----------------------------------------------------------
 
     @property
-    def spb(self) -> float:
-        """Seconds per mix beat."""
-        return 60.0 / self.parts.mix_tempo
+    def tempo(self) -> TempoMap:
+        return self.parts.mix_tempo
+
+    def _beats(self, a: float, b: float) -> float:
+        """Mix beats from second `a` to `b` (through the tempo map), rounded
+        as written to the plan."""
+        return _round_beats(self.tempo.sec_to_beat(b) - self.tempo.sec_to_beat(a))
+
+    def _dur_beats(self, raw: dict, start: float) -> float:
+        """A plan duration (as written) in mix beats, counted from `start`."""
+        if "beats" in raw:
+            return raw["beats"]
+        if "bars" in raw:
+            return raw["bars"] * 4
+        return self.tempo.sec_to_beat(start + raw["seconds"]) - self.tempo.sec_to_beat(start)
 
     def _smp(self, sec: float) -> int:
         return int(round(sec * self.parts.sample_rate))
@@ -145,9 +157,9 @@ class TuneSession:
                 last = max(last, echo_window(seg, self.parts.mix_tempo, anchors).end_sec)
             if seg.style == "vocal_handoff":
                 last = max(last, handoff_swap(seg, self.parts.mix_tempo, anchors))
-            ctx = CONTEXT_BEATS * self.spb
-            start = max(0, self._smp(min(o.start_sec, n.start_sec) - ctx))
-            end = min(self.parts.total_samples, self._smp(last + ctx))
+            first = min(o.start_sec, n.start_sec)
+            start = max(0, self._smp(self.tempo.advance(first, -CONTEXT_BEATS)))
+            end = min(self.parts.total_samples, self._smp(self.tempo.advance(last, CONTEXT_BEATS)))
             out.append(Item(i, start, end, seg.from_deck, seg.to_deck, seg.style))
         return out
 
@@ -158,7 +170,7 @@ class TuneSession:
         start = mix_pos_to_seconds(seg.start_at, self.parts.mix_tempo, self.parts.timeline.anchors)
         kind = {"echo_out": "echo out", "vocal_handoff": "vocal handoff"}.get(it.style, "crossfade")
         return (f"{name(it.from_deck)} → {name(it.to_deck)} · {kind} at mix beat "
-                f"{round(start / self.spb, 1):g} (timeline[{it.index}])")
+                f"{round(self.tempo.sec_to_beat(start), 1):g} (timeline[{it.index}])")
 
     def item(self, index: int) -> Item:
         for it in self.items():
@@ -184,7 +196,7 @@ class TuneSession:
             w = echo_window(seg, self.parts.mix_tempo, anchors)
             state["echo"] = {
                 "end": w.end_sec,
-                "every": _beats(w.every_sec, self.spb),
+                "every": _round_beats(w.every_sec * self.tempo.bpm_before(w.cut_sec) / 60.0),
                 "feedback": w.feedback,
                 "highpass": w.highpass,
             }
@@ -194,8 +206,11 @@ class TuneSession:
             "sample_rate": sr,
             "start_sec": it.start / sr,
             "end_sec": it.end / sr,
-            "spb": self.spb,
             "zero_sec": o.start_sec,  # beat numbers on the page count from here
+            # Mix second of every quarter beat over the item, from quarter
+            # beat `grid_first` (counted from zero_sec): the page's beat
+            # numbers and snapping follow the tempo map through it.
+            **self._grid(it, o.start_sec),
             "decks": [
                 self._deck_info(it, it.from_deck, "out"),
                 self._deck_info(it, it.to_deck, "in"),
@@ -205,6 +220,16 @@ class TuneSession:
             # Decks mixed by stems → their stems (the page's stem lanes).
             "stems": {str(d): list(self.parts.stems.get(d, {}))
                       for d in (it.from_deck, it.to_deck)},
+        }
+
+    def _grid(self, it: Item, zero: float) -> dict:
+        tm, sr = self.tempo, self.parts.sample_rate
+        z = tm.sec_to_beat(zero)
+        q0 = int(np.floor((tm.sec_to_beat(it.start / sr) - z) * 4)) - 1
+        q1 = int(np.ceil((tm.sec_to_beat(it.end / sr) - z) * 4)) + 1
+        return {
+            "grid_first": q0,
+            "grid": [round(tm.beat_to_sec(z + q / 4), 6) for q in range(q0, q1 + 1)],
         }
 
     def _lane_index(self, deck: int, param: str) -> int | None:
@@ -283,7 +308,7 @@ class TuneSession:
             offset = state["swap"] - o["start"]
             if ("swap_at" in self.raw["timeline"][index]
                     or abs(offset - (o["end"] - o["start"]) / 2) > EPS):
-                keys["swap_at"] = {"offset": {"beats": _beats(offset, self.spb)}}
+                keys["swap_at"] = {"offset": {"beats": self._beats(o["start"], state["swap"])}}
             else:
                 keys["swap_at"] = DELETE
         return self._diff(index, keys)
@@ -301,7 +326,6 @@ class TuneSession:
         seg: TransitionSegment = self.plan.timeline[index]
         raw = self.raw["timeline"][index]
         anchors = self.parts.timeline.anchors
-        spb = self.spb
         o, n = state["out"], state["in"]
         for side in (o, n):
             side["curve"] = _clean_curve(side["curve"])
@@ -310,15 +334,15 @@ class TuneSession:
         orig_start = mix_pos_to_seconds(seg.start_at, self.parts.mix_tempo, anchors)
         if abs(o["start"] - orig_start) > EPS:
             new["start_at"] = self._mix_position(seg.start_at, o["start"], anchors)
-        out_len = o["end"] - o["start"]
-        if abs(out_len - duration_to_seconds(seg.duration, self.parts.mix_tempo)) > EPS:
-            new["duration"] = {"beats": _beats(out_len, spb)}
+        out_beats = self._beats(o["start"], o["end"])
+        if abs(out_beats - self._dur_beats(raw["duration"], orig_start)) > 1e-6:
+            new["duration"] = {"beats": out_beats}
 
         side_in: dict[str, Any] = {}
         if abs(n["start"] - o["start"]) > EPS:
-            side_in["offset"] = {"beats": _beats(n["start"] - o["start"], spb)}
-        if abs((n["end"] - n["start"]) - out_len) > EPS:
-            side_in["duration"] = {"beats": _beats(n["end"] - n["start"], spb)}
+            side_in["offset"] = {"beats": self._beats(o["start"], n["start"])}
+        if abs(self._beats(n["start"], n["end"]) - out_beats) > 1e-6:
+            side_in["duration"] = {"beats": self._beats(n["start"], n["end"])}
         side_out: dict[str, Any] = {}
         if isinstance(o["curve"], str) and o["curve"] == n["curve"]:
             new["curve"] = o["curve"] if o["curve"] != "equal_power" else DELETE
@@ -339,15 +363,14 @@ class TuneSession:
         seg: TransitionSegment = self.plan.timeline[index]
         raw = self.raw["timeline"][index]
         anchors = self.parts.timeline.anchors
-        spb = self.spb
         cut, n, e = state["out"]["start"], state["in"], state["echo"]
         new: dict[str, Any] = {}
         if abs(cut - mix_pos_to_seconds(seg.start_at, self.parts.mix_tempo, anchors)) > EPS:
             new["start_at"] = self._mix_position(seg.start_at, cut, anchors)
-        new["duration"] = {"beats": _beats(e["end"] - cut, spb)}
+        new["duration"] = {"beats": self._beats(cut, e["end"])}
 
         echo = dict(raw["echo"])
-        if abs(_dur_beats(echo["every"], spb) - float(e["every"])) > 1e-6:
+        if abs(self._dur_beats(echo["every"], cut) - float(e["every"])) > 1e-6:
             echo["every"] = {"beats": _num(e["every"])}
         echo["feedback"] = _num(e["feedback"])
         if float(e.get("highpass", 0)) > 0:
@@ -358,9 +381,9 @@ class TuneSession:
 
         side_in: dict[str, Any] = {}
         if abs(n["start"] - cut) > EPS:
-            side_in["offset"] = {"beats": _beats(n["start"] - cut, spb)}
+            side_in["offset"] = {"beats": self._beats(cut, n["start"])}
         if n["end"] - n["start"] > EPS:
-            side_in["duration"] = {"beats": _beats(n["end"] - n["start"], spb)}
+            side_in["duration"] = {"beats": self._beats(n["start"], n["end"])}
             curve = _clean_curve(n["curve"] if n["curve"] != "step" else "equal_power")
             if curve != "equal_power":
                 side_in["curve"] = curve
@@ -371,7 +394,8 @@ class TuneSession:
         """Only what differs from the file; a duration in bars that still
         resolves the same stays as written."""
         raw = self.raw["timeline"][index]
-        spb = self.spb
+        seg = self.plan.timeline[index]
+        start = mix_pos_to_seconds(seg.start_at, self.tempo, self.parts.timeline.anchors)
         changes = {}
         for key, value in new.items():
             if value is DELETE:
@@ -379,22 +403,21 @@ class TuneSession:
                     changes[key] = DELETE
             elif raw.get(key) != value:
                 if key == "duration" and "duration" in raw and abs(
-                    _dur_beats(raw["duration"], spb) - value["beats"]
+                    self._dur_beats(raw["duration"], start) - value["beats"]
                 ) < 1e-6:
                     continue
                 changes[key] = value
         return changes
 
     def _mix_position(self, orig, sec: float, anchors: dict[str, float]) -> dict:
-        spb = self.spb
         if isinstance(orig, AfterPos):
-            off = _beats(sec - anchors[orig.after], spb)
+            off = self._beats(anchors[orig.after], sec)
             return {"after": orig.after, **({"offset": {"beats": off}} if off else {})}
         if isinstance(orig, BarPos):
-            return {"bar": _beats(sec, spb) / 4}
+            return {"bar": self._beats(0.0, sec) / 4}
         if isinstance(orig, SecondPos):
             return {"second": round(sec, 6)}
-        return {"beat": _beats(sec, spb)}
+        return {"beat": self._beats(0.0, sec)}
 
     def lane_changes(self, index: int, state: dict) -> tuple[dict[int, list], list[dict]]:
         """(edits, new_lanes) for the EQ / filter lanes in `state`:
@@ -581,7 +604,7 @@ class TuneSession:
             w = dict(state[side])
             if side == "out" and echo is not None:
                 # The echo repeats the `every` before the cut.
-                w["start"] -= float(echo["every"]) * self.spb
+                w["start"] -= float(echo["every"]) * 60.0 / self.tempo.bpm_before(w["start"])
             if not any(
                 s.deck == deck
                 and s.mix_start_sec - EPS <= w["start"]
@@ -689,17 +712,9 @@ def _num(x: float) -> float:
     return int(v) if v.is_integer() else v
 
 
-def _beats(sec: float, spb: float) -> float:
-    b = round(sec / spb, 4)
+def _round_beats(beats: float) -> float:
+    b = round(beats, 4)
     return int(b) if float(b).is_integer() else b
-
-
-def _dur_beats(raw: dict, spb: float) -> float:
-    if "beats" in raw:
-        return raw["beats"]
-    if "bars" in raw:
-        return raw["bars"] * 4
-    return raw["seconds"] / spb
 
 
 # ---------------------------------------------------------------------------

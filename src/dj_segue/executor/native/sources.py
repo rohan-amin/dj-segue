@@ -16,6 +16,10 @@ audio fades out over its last LOOP_SEAM_SEC while the incoming fades in from
 a pre-roll of track audio before its start — so the transient on the first
 beat is untouched and nothing clicks.
 
+Tempo changes (v0.9): a segment with a `warp` follows the mix tempo, so
+it's stretched with a varying rate (`Stretcher(rate_at=…)`); a warped loop
+renders each repetition on its own, since each lands on different mix beats.
+
 Seeking (`start` > 0) begins mid-mix, for live playback from a position: a
 stretched segment entered part-way is warmed up for SEEK_WARMUP_SEC first,
 so it sounds right but isn't bit-identical to playing from the top.
@@ -23,11 +27,13 @@ so it sounds right but isn't bit-identical to playing from the top.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from dj_segue.executor.native.stretch import Stretcher
+from dj_segue.time_math import Warp
 
 # Loop / jump seam crossfade length (seconds of mix time).
 LOOP_SEAM_SEC = 0.003
@@ -49,6 +55,9 @@ class CompiledPlay:
     # rep's length in track samples.
     rep_starts: tuple[int, ...] = ()
     loop_track_samples: int = 0
+    # Follows a changing mix tempo (v0.9); `rate` is then the rate at the
+    # start. The warp's track position is for rep 0 (or the play).
+    warp: Warp | None = None
 
 
 def read_padded(audio: np.ndarray, start: int, n: int) -> np.ndarray:
@@ -74,6 +83,8 @@ def needs_seam(prev: CompiledPlay, c: CompiledPlay) -> bool:
         return False
     if prev.rep_starts or c.track_id != prev.track_id or prev.rate != 1.0 or c.rate != 1.0:
         return True
+    if prev.warp is not None or c.warp is not None:
+        return True
     prev_track_end = prev.track_start_sample + (prev.mix_end_sample - prev.mix_start_sample)
     return c.track_start_sample != prev_track_end
 
@@ -95,13 +106,18 @@ class _Segment:
         self.track_start = c.track_start_sample - pre_track
         if c.rep_starts:
             self.loop = self._loop_audio()
-        elif c.rate != 1.0:
+        elif c.rate != 1.0 or c.warp is not None:
             warm = min(first, int(round(SEEK_WARMUP_SEC * sample_rate)))
             begin = first - warm  # output index the stretcher starts at
-            self.stretch = Stretcher(
-                lambda s, n: read_padded(audio, s, n),
-                self.track_start + int(round(begin * c.rate)), c.rate, sample_rate,
-            )
+            if c.warp is None:
+                self.stretch = Stretcher(
+                    lambda s, n: read_padded(audio, s, n),
+                    self.track_start + int(round(begin * c.rate)), c.rate, sample_rate,
+                )
+            else:
+                self.stretch = warped_stretcher(
+                    audio, c.warp, c.mix_start_sample - lead + begin, sample_rate
+                )
             if warm:
                 self.stretch.pull(warm)
 
@@ -139,7 +155,10 @@ class _Segment:
         pre_track = int(round(seam * c.rate))
         region_mix = int(np.ceil(c.loop_track_samples / c.rate)) + 2  # rounding slack
         start = c.track_start_sample - pre_track
-        if c.rate == 1.0:
+        src = None
+        if c.warp is not None:
+            pass  # rendered per rep below
+        elif c.rate == 1.0:
             src = read_padded(self.audio, start, seam + region_mix)
         else:
             src = Stretcher(
@@ -149,6 +168,12 @@ class _Segment:
         starts = [s - c.mix_start_sample + lead for s in c.rep_starts] + [lead + n]
         for k, (a, b) in enumerate(zip(starts, starts[1:])):
             length = b - a
+            if c.warp is not None:
+                rep_start = c.rep_starts[k]
+                warp = c.warp.starting(rep_start / sr)
+                src = warped_stretcher(self.audio, warp, rep_start - seam, sr).pull(
+                    seam + length
+                )
             # Keep fades inside short reps (not reachable at musical lengths).
             f_in = min(seam, length // 2) if k > 0 else lead
             f_out = min(seam, length // 2) if b < lead + n else 0
@@ -159,6 +184,19 @@ class _Segment:
                 chunk[-f_out:] *= ramp(f_out, rising=False)[:, None]
             out[a - f_in : b] += chunk
         return out
+
+
+def warped_stretcher(audio: np.ndarray, warp: Warp, mix_sample: int, sample_rate: int) -> Stretcher:
+    """A stretcher whose output frame 0 is mix sample `mix_sample` and whose
+    rate follows `warp`."""
+    sr = sample_rate
+    start = int(round(warp.track_sec(mix_sample / sr) * sr))
+    steps = warp.steps(mix_sample / sr, math.inf)
+    return Stretcher(
+        lambda s, n: read_padded(audio, s, n), start, 1.0, sr,
+        rate_at=lambda frame: warp.rate_at_track(frame / sr),
+        breaks=[int(round(t * sr)) for t in steps],
+    )
 
 
 class DeckSource:

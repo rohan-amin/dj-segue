@@ -1,12 +1,17 @@
 """Time conversions: positions/durations ↔ seconds, beats, samples.
 
 All conversions assume 4/4 time (the schema doesn't expose time signature in v0.1).
-For v0.1: tracks play at their natural bpm; mix_tempo is informational and used
-only for converting mix-time positions to seconds.
+
+Mix-time beats go through a `TempoMap` (v0.9): the mix tempo, with steps and
+linear ramps (`meta.tempo_map`). Every function taking a mix tempo accepts a
+TempoMap or a plain bpm (a constant map). On a constant stretch of the map the
+arithmetic is exactly the single-tempo arithmetic, so plans without tempo
+changes resolve to the same seconds, bit for bit.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,8 +69,211 @@ class TrackGrid:
         return self.beat_to_seconds(bar * BEATS_PER_BAR)
 
 
+@dataclass(frozen=True)
+class TempoPiece:
+    """One stretch of a TempoMap: from `t0` seconds (mix beat `b0`) the tempo
+    moves linearly in time from `bpm0` to `bpm1` over `dur` seconds (`bpm0 ==
+    bpm1`: constant). The last piece of a map is constant and endless."""
+
+    t0: float
+    b0: float
+    bpm0: float
+    bpm1: float
+    dur: float = math.inf
+
+    @property
+    def t1(self) -> float:
+        return self.t0 + self.dur
+
+    @property
+    def b1(self) -> float:
+        return self.b0 + self.beats(self.dur) if self.dur != math.inf else math.inf
+
+    @property
+    def constant(self) -> bool:
+        return self.bpm0 == self.bpm1
+
+    def bpm(self, t: float) -> float:
+        if self.constant:
+            return self.bpm0
+        return self.bpm0 + (self.bpm1 - self.bpm0) * (t - self.t0) / self.dur
+
+    def beats(self, tau: float) -> float:
+        """Beats elapsed `tau` seconds after t0."""
+        if self.constant:
+            return tau * self.bpm0 / 60.0
+        a = (self.bpm1 - self.bpm0) / (2.0 * self.dur)
+        return (self.bpm0 * tau + a * tau * tau) / 60.0
+
+    def seconds(self, beats: float) -> float:
+        """Seconds after t0 at which `beats` have elapsed."""
+        if self.constant:
+            return beats * 60.0 / self.bpm0
+        a = (self.bpm1 - self.bpm0) / (2.0 * self.dur)
+        c = 60.0 * beats
+        # a·τ² + bpm0·τ − c = 0, in the form that's stable as a → 0.
+        return 2.0 * c / (self.bpm0 + math.sqrt(self.bpm0 * self.bpm0 + 4.0 * a * c))
+
+
+@dataclass(frozen=True)
+class TempoMap:
+    """The mix tempo over time (v0.9): constant pieces and linear ramps,
+    covering all of mix time. Mix beat 0 is at 0 s; before 0 the first
+    piece's tempo extends backwards.
+
+    A ramp is linear in *time*, like moving a pitch fader at a steady speed:
+    a ramp from b0 to b1 bpm lasting N beats takes 120·N / (b0 + b1) seconds.
+    """
+
+    pieces: tuple[TempoPiece, ...]
+
+    @classmethod
+    def fixed(cls, bpm: float) -> "TempoMap":
+        return cls((TempoPiece(0.0, 0.0, bpm, bpm),))
+
+    @property
+    def start_bpm(self) -> float:
+        return self.pieces[0].bpm0
+
+    @property
+    def constant(self) -> bool:
+        return len(self.pieces) == 1
+
+    def _at_sec(self, t: float) -> TempoPiece:
+        for p in reversed(self.pieces):
+            if t >= p.t0:
+                return p
+        return self.pieces[0]
+
+    def _at_beat(self, b: float) -> TempoPiece:
+        for p in reversed(self.pieces):
+            if b >= p.b0:
+                return p
+        return self.pieces[0]
+
+    def bpm_at(self, t: float) -> float:
+        """The tempo at mix second `t` (at a step: the new tempo)."""
+        return self._at_sec(t).bpm(t)
+
+    def bpm_before(self, t: float) -> float:
+        """The tempo just before mix second `t` (at a step: the old tempo)."""
+        p = self._at_sec(t)
+        if t == p.t0 and p is not self.pieces[0]:
+            return self.pieces[self.pieces.index(p) - 1].bpm1
+        return p.bpm(t)
+
+    def beat_to_sec(self, b: float) -> float:
+        p = self._at_beat(b)
+        return p.t0 + p.seconds(b - p.b0)
+
+    def sec_to_beat(self, t: float) -> float:
+        p = self._at_sec(t)
+        return p.b0 + p.beats(t - p.t0)
+
+    def constant_between(self, t0: float, t1: float) -> bool:
+        """True when [t0, t1] lies in one constant piece."""
+        p = self._at_sec(min(t0, t1))
+        return p.constant and max(t0, t1) <= p.t1
+
+    def advance(self, t: float, beats: float) -> float:
+        """The mix second `beats` mix beats after `t` (before, if negative)."""
+        p = self._at_sec(t)
+        if p.constant:
+            end = t + beats * 60.0 / p.bpm0
+            if (p is self.pieces[0] or end >= p.t0) and end <= p.t1:
+                return end
+        return self.beat_to_sec(self.sec_to_beat(t) + beats)
+
+    def with_change(self, at: float, bpm: float, ramp_sec: float = 0.0) -> "TempoMap":
+        """This map with a change at mix second `at`: a step to `bpm`, or a
+        linear ramp to it over `ramp_sec`. `at` must not come before the end
+        of the last change."""
+        last = self.pieces[-1]
+        if at < last.t0:
+            raise ValueError(
+                f"a tempo change at {at:.3f}s comes before the previous one "
+                f"(ends at {last.t0:.3f}s); list changes in time order"
+            )
+        b_at = last.b0 + last.beats(at - last.t0)
+        kept = self.pieces[:-1]
+        if at > last.t0:
+            kept += (TempoPiece(last.t0, last.b0, last.bpm0, last.bpm0, at - last.t0),)
+        if ramp_sec > 0:
+            ramp = TempoPiece(at, b_at, last.bpm0, bpm, ramp_sec)
+            return TempoMap(kept + (ramp, TempoPiece(ramp.t1, ramp.b1, bpm, bpm)))
+        return TempoMap(kept + (TempoPiece(at, b_at, bpm, bpm),))
+
+
+def as_tempo(tempo: "TempoMap | float") -> TempoMap:
+    return tempo if isinstance(tempo, TempoMap) else TempoMap.fixed(float(tempo))
+
+
+def ramp_seconds(dur: Any, bpm0: float, bpm1: float) -> float:
+    """A tempo ramp's length in seconds: `dur` is the mix beats (or bars, or
+    seconds) the ramp lasts, at a tempo moving linearly from bpm0 to bpm1."""
+    if isinstance(dur, SecondsDur):
+        return float(dur.seconds)
+    beats = dur.beats if isinstance(dur, BeatsDur) else dur.bars * BEATS_PER_BAR
+    return 120.0 * beats / (bpm0 + bpm1)
+
+
+def mix_duration(start: float, dur: Any, tempo: "TempoMap | float") -> float:
+    """A mix-time duration starting at mix second `start`, in seconds. Beats
+    and bars count through the tempo map from `start` (negative durations
+    count back)."""
+    if isinstance(dur, SecondsDur):
+        return float(dur.seconds)
+    tm = as_tempo(tempo)
+    beats = dur.beats if isinstance(dur, BeatsDur) else dur.bars * BEATS_PER_BAR
+    if tm.constant_between(start, start + beats * 60.0 / tm.bpm_at(start)):
+        return duration_to_seconds(dur, tm.bpm_at(start))
+    return tm.advance(start, beats) - start
+
+
+@dataclass(frozen=True)
+class Warp:
+    """How a segment following a changing mix tempo (`target_bpm: "mix"`
+    over a tempo change) reads its track: track beats advance with mix beats.
+    The track is at `track_from_sec` at mix second `mix_start_sec`."""
+
+    tempo: TempoMap
+    track_bpm: float
+    mix_start_sec: float
+    track_from_sec: float
+
+    def track_sec(self, mix_sec: float) -> float:
+        tm = self.tempo
+        beats = tm.sec_to_beat(mix_sec) - tm.sec_to_beat(self.mix_start_sec)
+        return self.track_from_sec + beats * 60.0 / self.track_bpm
+
+    def mix_sec(self, track_sec: float) -> float:
+        tm = self.tempo
+        beats = (track_sec - self.track_from_sec) * self.track_bpm / 60.0
+        return tm.beat_to_sec(tm.sec_to_beat(self.mix_start_sec) + beats)
+
+    def rate_at_track(self, track_sec: float) -> float:
+        """Playback rate (track-seconds per mix-second) where the track is
+        at `track_sec`."""
+        return self.tempo.bpm_at(self.mix_sec(track_sec)) / self.track_bpm
+
+    def steps(self, mix_from: float, mix_to: float) -> list[float]:
+        """Track seconds where the rate jumps (tempo steps) between two mix
+        seconds."""
+        tm = self.tempo
+        return [
+            self.track_sec(b.t0)
+            for a, b in zip(tm.pieces, tm.pieces[1:])
+            if mix_from <= b.t0 <= mix_to and a.bpm1 != b.bpm0
+        ]
+
+    def starting(self, mix_start_sec: float) -> "Warp":
+        """The same warp with the track at `track_from_sec` at another mix
+        second (a loop's next repetition)."""
+        return Warp(self.tempo, self.track_bpm, mix_start_sec, self.track_from_sec)
+
+
 def mix_pos_to_seconds(
-    pos: Any, mix_tempo: float, anchors: dict[str, float] | None = None
+    pos: Any, mix_tempo: "TempoMap | float", anchors: dict[str, float] | None = None
 ) -> float:
     """Resolve a mix-time position to seconds. Cue refs are invalid here.
 
@@ -78,12 +286,13 @@ def mix_pos_to_seconds(
                 f"position after {pos.after!r} is unresolved: no earlier segment "
                 f"with that id (or the timeline isn't resolved yet)"
             )
-        offset = 0.0 if pos.offset is None else duration_to_seconds(pos.offset, mix_tempo)
-        return anchors[pos.after] + offset
+        start = anchors[pos.after]
+        offset = 0.0 if pos.offset is None else mix_duration(start, pos.offset, mix_tempo)
+        return start + offset
     if isinstance(pos, BeatPos):
-        return pos.beat * 60.0 / mix_tempo
+        return as_tempo(mix_tempo).beat_to_sec(pos.beat)
     if isinstance(pos, BarPos):
-        return pos.bar * BEATS_PER_BAR * 60.0 / mix_tempo
+        return as_tempo(mix_tempo).beat_to_sec(pos.bar * BEATS_PER_BAR)
     if isinstance(pos, SecondPos):
         return float(pos.second)
     if isinstance(pos, CuePos):
@@ -157,7 +366,7 @@ class FadeWindow:
 
 
 def transition_windows(
-    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+    seg: TransitionSegment, mix_tempo: "TempoMap | float", anchors: dict[str, float] | None = None
 ) -> tuple[FadeWindow, FadeWindow]:
     """(out, in): the from_deck's fade-out and the to_deck's fade-in.
 
@@ -168,12 +377,15 @@ def transition_windows(
     An echo_out (v0.6) cuts the dry from_deck at `start_at` (its echo tail is
     `echo_window`); the to_deck comes in on the cut unless `in` gives it a
     fade (`duration` there defaults to 0, not the tail length).
+
+    Durations count mix beats from where they start (v0.9 tempo map): a
+    side's `duration` from that side's start.
     """
     start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
     if seg.style == "cut":
         w = FadeWindow(start, start, "step")
         return w, w
-    duration = duration_to_seconds(seg.duration, mix_tempo)
+    duration = mix_duration(start, seg.duration, mix_tempo)
     curve = seg.curve or "equal_power"
     echo = seg.style == "echo_out"
     if echo:
@@ -182,8 +394,8 @@ def transition_windows(
     def side(o) -> FadeWindow:
         s, d, c = start, duration, curve
         if o is not None:
-            s += duration_to_seconds(o.offset, mix_tempo) if o.offset else 0.0
-            d = duration_to_seconds(o.duration, mix_tempo) if o.duration else duration
+            s += mix_duration(s, o.offset, mix_tempo) if o.offset else 0.0
+            d = mix_duration(s, o.duration, mix_tempo) if o.duration else duration
             c = o.curve or curve
         return FadeWindow(s, s + d, "step" if echo and d == 0 else c)
 
@@ -193,14 +405,14 @@ def transition_windows(
 
 
 def handoff_swap(
-    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+    seg: TransitionSegment, mix_tempo: "TempoMap | float", anchors: dict[str, float] | None = None
 ) -> float:
     """A vocal_handoff's vocal switch, in mix seconds (v0.8): `start_at` +
     `swap_at.offset`, by default halfway through `duration`."""
     start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
     if seg.swap_at is None:
-        return start + duration_to_seconds(seg.duration, mix_tempo) / 2
-    return start + duration_to_seconds(seg.swap_at.offset, mix_tempo)
+        return start + mix_duration(start, seg.duration, mix_tempo) / 2
+    return start + mix_duration(start, seg.swap_at.offset, mix_tempo)
 
 
 @dataclass(frozen=True)
@@ -216,13 +428,16 @@ class EchoWindow:
 
 
 def echo_window(
-    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+    seg: TransitionSegment, mix_tempo: "TempoMap | float", anchors: dict[str, float] | None = None
 ) -> EchoWindow:
+    """The repeats keep the outgoing tempo (`every` at the tempo just
+    before the cut, even when the mix changes tempo on it); the tail's
+    `duration` counts mix beats from the cut."""
     cut = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
     return EchoWindow(
         cut,
-        duration_to_seconds(seg.echo.every, mix_tempo),
-        cut + duration_to_seconds(seg.duration, mix_tempo),
+        duration_to_seconds(seg.echo.every, as_tempo(mix_tempo).bpm_before(cut)),
+        cut + mix_duration(cut, seg.duration, mix_tempo),
         seg.echo.feedback,
         seg.echo.highpass,
     )

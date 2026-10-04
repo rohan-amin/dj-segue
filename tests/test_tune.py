@@ -57,7 +57,7 @@ def session(tmp_path):
 
 
 def _beats(s: TuneSession, b: float) -> float:
-    return b * s.spb
+    return s.tempo.beat_to_sec(b)
 
 
 def test_lists_the_crossfade(session) -> None:
@@ -404,3 +404,37 @@ def test_stem_lanes_save_and_play_exactly(handoff_session, tmp_path) -> None:
     fresh = TuneSession(s.plan_path, tmp_path)
     full = NativeEngine().render(fresh.plan, tmp_path, fresh.grids).samples
     np.testing.assert_array_equal(page, full[it.start : it.end])
+
+
+def test_beats_follow_the_tempo_map(tmp_path) -> None:
+    """With the mix ramping through the blend (v0.9), the page's grid and
+    the beats an edit writes count through the ramp."""
+    rng = np.random.default_rng(1)
+    for name in ("a", "b"):
+        sf.write(tmp_path / f"{name}.wav", (0.2 * rng.standard_normal(60 * BEAT)).astype(np.float32),
+                 SR, subtype="FLOAT")
+    plan = tmp_path / "t.plan.jsonc"
+    plan.write_text(
+        PLAN.replace('"0.4"', '"0.9"')
+        .replace('"mix_tempo": 120 }',
+                 '"mix_tempo": 120, "tempo_map": [{ "at": { "beat": 24 }, "bpm": 150, '
+                 '"ramp": { "beats": 16 } }] }')
+        .replace('"to": { "beat": 48 }', '"to": { "beat": 48 }, "target_bpm": "mix"')
+    )
+    s = TuneSession(plan, tmp_path)
+    s.load()
+    tm = s.tempo
+    assert not tm.constant
+    d = s.describe(2)
+    assert d["state"]["out"]["start"] == pytest.approx(tm.beat_to_sec(32))
+    assert d["state"]["out"]["end"] == pytest.approx(tm.beat_to_sec(48))
+    q0 = d["grid_first"]
+    assert d["grid"][:3] == pytest.approx([tm.beat_to_sec(32 + (q0 + k) / 4) for k in range(3)])
+    st = d["state"]
+    st["in"]["start"] = tm.beat_to_sec(24)  # into the ramp, 8 beats earlier
+    st["out"]["start"] = tm.beat_to_sec(36)
+    r = s.preview(2, st)
+    assert r["ok"], r
+    assert r["changes"]["start_at"] == {"after": "a_end", "offset": {"beats": -12}}
+    assert r["changes"]["duration"] == {"beats": 12}
+    assert r["changes"]["in"] == {"offset": {"beats": -12}, "duration": {"beats": 24}}

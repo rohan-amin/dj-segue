@@ -1,6 +1,6 @@
 """Native audio engine — offline WAV render (live playback: live.py).
 
-Supports every segment, transition and automation lane in schema v0.8.
+Supports every segment, transition and automation lane in schema v0.9.
 
     prepare      plan → tracks, stems, timeline, each deck's segments
     sources.py   each deck's (or stem's) audio before gain, stretched with
@@ -26,8 +26,9 @@ taken as 44.1 kHz). Decks not mixed by stems play the track whole.
 
 Single sample rate (mismatched tracks error out). A play segment with
 `target_bpm` is time-stretched (pitch preserved) by target / track tempo;
-otherwise the track plays at its natural tempo. mix_tempo converts mix-time
-positions to seconds.
+otherwise the track plays at its natural tempo. `mix_tempo` is the tempo
+map (v0.9: steps and ramps) that converts mix-time positions to seconds; a
+`"mix"` segment across a change follows it (a varying stretch).
 
 Echo out (v0.6): the dry from_deck cuts at `start_at` and its last `every`
 before the cut repeats like a loop — same pre-boundary seams, the first one
@@ -75,8 +76,8 @@ from dj_segue.executor.native.sources import (
     read_padded,
 )
 from dj_segue.schema.plan import LoopSegment, Plan, PlaySegment, TransitionSegment
-from dj_segue.schema.validator import resolved_mix_tempo
-from dj_segue.time_math import EchoWindow, TrackGrid, echo_window
+from dj_segue.schema.validator import resolved_tempo
+from dj_segue.time_math import EchoWindow, TempoMap, TrackGrid, echo_window
 
 __all__ = ["LOOP_SEAM_SEC", "DeckRender", "Levels", "NativeEngine", "Tail", "prepare"]
 
@@ -95,7 +96,7 @@ class Prepared:
 
     plan: Plan
     sample_rate: int
-    mix_tempo: float
+    mix_tempo: TempoMap
     timeline: Timeline
     total_samples: int
     segments: dict[int, list[tuple[CompiledPlay, int]]]  # deck → [(segment, lead)]
@@ -133,7 +134,7 @@ def prepare(
     player keeps one across reloads."""
     audio_root = Path(audio_root).resolve()
     track_audio, explicit_stems, sample_rate = _load_tracks(plan, audio_root, audio_cache)
-    mix_tempo = resolved_mix_tempo(plan, grids)
+    mix_tempo = resolved_tempo(plan, grids)
     if mix_tempo is None:
         raise ValueError(
             "mix tempo is unknown: the first track's bpm is auto-detected; "
@@ -177,7 +178,7 @@ class DeckRender:
     decks: dict[int, np.ndarray]  # deck → (total_samples, 2) float32
     sample_rate: int
     total_samples: int
-    mix_tempo: float
+    mix_tempo: TempoMap
     timeline: Timeline
     # Decks with whole-deck EQ (not mixed by stems): their `decks` entry is
     # the band sum; these are the (low, high) bands (eq.split_bands).
@@ -448,6 +449,7 @@ def _compile_play_segments(spans: list[Span], sample_rate: int) -> list[Compiled
             rate=sp.rate,
             rep_starts=tuple(smp(r.mix_start_sec) for r in sp.reps),
             loop_track_samples=max((smp(r.track_len_sec) for r in sp.reps), default=0),
+            warp=sp.warp,
         )
         for sp in spans
         if sp.kind in ("play", "loop")
@@ -459,7 +461,7 @@ def _compile_play_segments(spans: list[Span], sample_rate: int) -> list[Compiled
 # ---------------------------------------------------------------------------
 
 
-def _echo_windows(plan: Plan, mix_tempo: float, anchors: dict[str, float]):
+def _echo_windows(plan: Plan, mix_tempo: TempoMap, anchors: dict[str, float]):
     """(from_deck, EchoWindow) for each echo_out, in timeline order."""
     for seg in plan.timeline:
         if isinstance(seg, TransitionSegment) and seg.style == "echo_out":

@@ -31,7 +31,7 @@ dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by 
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
 track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`
-and `docs/schema-v0.8.md`.
+and `docs/schema-v0.9.md`.
 
 `dj-segue scrub <file>` opens the track in your browser (a local page; nothing is
 uploaded) to find beat numbers by ear. It shows the whole song as a map — waveform,
@@ -76,7 +76,7 @@ any time to free space.
 
 A **plan** is a score-style JSONC document describing what each deck does over the course of a mix. It's hand-editable for testing and AI-generated for real use. The plan is engine-agnostic — the same plan can run on the native Python audio engine (default) or via a Mixxx bridge (for cross-validation).
 
-See `docs/architecture.md` for the design rationale and `docs/schema-v0.8.md` for the plan format.
+See `docs/architecture.md` for the design rationale and `docs/schema-v0.9.md` for the plan format.
 
 ---
 

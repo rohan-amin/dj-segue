@@ -30,6 +30,7 @@ from dj_segue.executor.native.curves import render_envelope_range
 from dj_segue.executor.native.eq import BandSplitter, apply_eq
 from dj_segue.executor.native.filter import FilterState
 from dj_segue.schema.plan import Plan
+from dj_segue.time_math import TempoMap
 
 BANDS = ("low", "mid", "high")
 
@@ -39,7 +40,7 @@ class DeckChain:
         self,
         plan: Plan,
         deck: int,
-        mix_tempo: float,
+        mix_tempo: TempoMap | float,
         sample_rate: int,
         anchors: dict[str, float],
         stems: tuple[str, ...] = (),

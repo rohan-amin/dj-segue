@@ -1,0 +1,82 @@
+// examples/fancy_likeem_echo74.plan.jsonc
+//
+// fancy_likeem_echo with a tempo map (schema 0.9; the R2 acceptance case):
+// the mix clock steps to 74 on the echo out's cut, and Bottoms Up plays at
+// "target_bpm": "mix", so it runs at its own tempo and any later position
+// counts in its beats. Needs your own copies of the tracks in the
+// git-ignored audio/ folder.
+//
+//   - Fancy and the Fancy → Like 'em All blend are unchanged, except a
+//     bass swap: Fancy's lows go to -24 dB over the 4 beats before Like
+//     'em All comes up in the drawn fade-in (eq lane, M5).
+//   - Like 'em All plays to its beat 160 (a downbeat) and echoes out there:
+//     its last beat repeats on the mix grid, each repeat half the last,
+//     fading out over 4 beats.
+//   - Bottoms Up comes in hard on the cut at its own tempo, 74: the mix's
+//     tempo steps from 91.93 to 74 there (meta.tempo_map), and the echo's
+//     repeats keep Like 'em All's tempo.
+
+{
+  "schema_version": "0.9",
+
+  "meta": {
+    "mix_name": "Fancy into Like 'em All, echo out into Bottoms Up at 74",
+    "source_prompt": "Echo out of Like 'em All at beat 160 into Bottoms Up at its native tempo",
+    "mix_tempo": 91.93,
+    "tempo_map": [
+      { "at": { "after": "likeem_end" }, "bpm": 74 }
+    ]
+  },
+
+  "tracks": {
+    "fancy":     { "path": "audio/07 - Fancy [feat. T.I., Swizz Beatz] [Explicit].mp3" },
+    "likeem":    { "path": "audio/01 - Like 'em All (Radio Version).mp3" },
+    "bottomsup": { "path": "audio/05 - Bottoms Up (feat. Nicki Minaj) [Explicit].mp3", "bpm": 74 }
+  },
+
+  "decks": {
+    "1": { "label": "fancy" },
+    "2": { "label": "likeem" },
+    "3": { "label": "bottomsup" }
+  },
+
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "fancy",
+      "from": { "second": 0 }, "to": { "beat": 112 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "fancy_end", "deck": 1, "track": "fancy",
+      "from": { "beat": 208 }, "to": { "beat": 336 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "likeem_end", "deck": 2, "track": "likeem",
+      "from": { "beat": 0 }, "to": { "beat": 160 },
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
+      "duration": { "beats": 32 },
+      "in": { "curve": { "points": [[0, 0], [0.1263, 0.0483], [0.2339, 0.065], [0.4776, 0.1004], [0.5315, 0.7216], [0.625, 0.8316], [0.75, 0.924], [0.875, 0.9808], [1, 1]] } } },
+
+    { "type": "play", "deck": 3, "track": "bottomsup",
+      "from": { "beat": 0 }, "to": { "beat": 296 },
+      "start_at": { "after": "likeem_end" },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "echo_out",
+      "from_deck": 2, "to_deck": 3,
+      "start_at": { "after": "likeem_end" },
+      "duration": { "beats": 4 },
+      "echo": { "every": { "beats": 1 }, "feedback": 0.5 } }
+  ],
+
+  "automation": [
+    { "lane": "eq", "deck": 1, "band": "low",
+      "keyframes": [
+        { "at": { "after": "fancy_end", "offset": { "beats": -19 } }, "value_db": 0 },
+        { "at": { "after": "fancy_end", "offset": { "beats": -15 } }, "value_db": -24 }
+      ] }
+  ]
+}

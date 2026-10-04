@@ -26,15 +26,19 @@ from dj_segue.schema.plan import (
 from dj_segue.schema.validator import (
     PlanValidationError,
     position_to_mix_beats,
-    resolved_mix_tempo,
+    resolved_tempo,
     tempo_track,
     validate_plan,
 )
+from dj_segue.time_math import TempoMap
 
 
 def format_plan(plan: Plan, *, run_validation: bool = True) -> str:
     out = StringIO()
-    mix_tempo = resolved_mix_tempo(plan)
+    try:
+        mix_tempo = resolved_tempo(plan)
+    except (ValueError, TypeError, KeyError):
+        mix_tempo = None  # reported under validation
     anchors = _anchors(plan, mix_tempo)
 
     _write_header(out, plan, mix_tempo)
@@ -48,7 +52,7 @@ def format_plan(plan: Plan, *, run_validation: bool = True) -> str:
     return out.getvalue()
 
 
-def _anchors(plan: Plan, mix_tempo: float | None) -> dict[str, float] | None:
+def _anchors(plan: Plan, mix_tempo: TempoMap | None) -> dict[str, float] | None:
     """Segment end times for `after` positions; None if timing needs preprocessing."""
     if mix_tempo is None:
         return None
@@ -61,17 +65,27 @@ def _anchors(plan: Plan, mix_tempo: float | None) -> dict[str, float] | None:
 # ---------------------------------------------------------------------------
 
 
-def _write_header(out: StringIO, plan: Plan, mix_tempo: float | None) -> None:
+def _write_header(out: StringIO, plan: Plan, mix_tempo: TempoMap | None) -> None:
     out.write(f"== {plan.meta.mix_name} ==\n")
     out.write(f"schema_version : {plan.schema_version}\n")
-    if mix_tempo is None:
+    if mix_tempo is None and plan.meta.mix_tempo is not None:
+        out.write(f"mix_tempo      : {plan.meta.mix_tempo:g} bpm  "
+                  f"(tempo changes: known after preprocess)")
+    elif mix_tempo is None:
         out.write(
             f"mix_tempo      : auto  ({tempo_track(plan)}'s detected bpm; known after preprocess)"
         )
     else:
-        out.write(f"mix_tempo      : {mix_tempo:g} bpm")
+        out.write(f"mix_tempo      : {mix_tempo.start_bpm:g} bpm")
         if plan.meta.mix_tempo is None:
             out.write(f"  (default: {tempo_track(plan)}'s bpm)")
+        for p in mix_tempo.pieces[1:]:
+            b = round(p.b0, 3)
+            if not p.constant:
+                out.write(f"\n  tempo change : beat {b:g}: ramp {p.bpm0:g} → {p.bpm1:g} bpm over "
+                          f"{round(p.b1 - p.b0, 3):g} beats ({p.dur:.3f}s)")
+            elif p.bpm0 != _prev_bpm(mix_tempo, p):
+                out.write(f"\n  tempo change : beat {b:g}: {p.bpm0:g} bpm")
     out.write("\n")
     if plan.meta.author:
         out.write(f"author         : {plan.meta.author}\n")
@@ -111,7 +125,7 @@ def _write_decks(out: StringIO, plan: Plan) -> None:
 
 
 def _write_timeline(
-    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+    out: StringIO, plan: Plan, mix_tempo: TempoMap | None, anchors: dict[str, float] | None
 ) -> None:
     out.write(f"-- timeline ({len(plan.timeline)} segments) --\n")
     for i, seg in enumerate(plan.timeline):
@@ -184,8 +198,13 @@ def _fmt_side(side) -> str:
     return ", ".join(parts)
 
 
+def _prev_bpm(tm: TempoMap, piece) -> float:
+    prev = tm.pieces[tm.pieces.index(piece) - 1]
+    return prev.bpm1
+
+
 def _write_transition_expansion(
-    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+    out: StringIO, plan: Plan, mix_tempo: TempoMap | None, anchors: dict[str, float] | None
 ) -> None:
     """Show the per-deck gain ramps that crossfade/cut transitions compile to."""
     if not any(isinstance(s, TransitionSegment) for s in plan.timeline):
@@ -208,13 +227,15 @@ def _write_transition_expansion(
         out.write(f"-- transition expansion --\n  (cannot expand: {e})\n\n")
         return
     out.write("-- transition expansion (per-deck gain) --\n")
-    beats_per_sec = mix_tempo / 60.0
+    def beat(sec: float) -> float:
+        return round(mix_tempo.sec_to_beat(sec), 9)
+
     for deck in sorted(envs):
         env = envs[deck]
         out.write(f"  deck {deck}: starts at gain {env.initial:g}  ({env.source})\n")
         for r in env.ramps:
-            b1 = r.start_sec * beats_per_sec
-            b2 = r.end_sec * beats_per_sec
+            b1 = beat(r.start_sec)
+            b2 = beat(r.end_sec)
             span = f"beat {b1:g}" if b1 == b2 else f"beat {b1:g} → {b2:g}"
             out.write(
                 f"        {span}: {r.start_value:g} → {r.end_value:g}  ({_fmt_curve(r.shape)})\n"
@@ -222,7 +243,7 @@ def _write_transition_expansion(
     for i, seg in enumerate(plan.timeline):
         if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
             h = handoff_windows(seg, mix_tempo, anchors)
-            b = lambda sec: round(sec * beats_per_sec, 3)  # noqa: E731
+            b = lambda sec: round(mix_tempo.sec_to_beat(sec), 3)  # noqa: E731
             out.write(
                 f"  timeline[{i}] vocal_handoff: instrumentals out beat {b(h.out.start_sec):g} → "
                 f"{b(h.out.end_sec):g}, in beat {b(h.in_.start_sec):g} → {b(h.in_.end_sec):g}; "
@@ -232,7 +253,7 @@ def _write_transition_expansion(
 
 
 def _write_automation(
-    out: StringIO, plan: Plan, mix_tempo: float | None, anchors: dict[str, float] | None
+    out: StringIO, plan: Plan, mix_tempo: TempoMap | None, anchors: dict[str, float] | None
 ) -> None:
     out.write(f"-- automation ({len(plan.automation)} lanes) --\n")
     if not plan.automation:
@@ -306,7 +327,7 @@ def _fmt_tempo(seg) -> str:
 
 def _fmt_mix_position(
     pos,
-    mix_tempo: float | None,
+    mix_tempo: TempoMap | None,
     anchors: dict[str, float] | None = None,
     default: str = "?",
 ) -> str:

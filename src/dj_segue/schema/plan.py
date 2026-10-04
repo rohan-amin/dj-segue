@@ -1,6 +1,6 @@
-"""Pydantic models for the dj-segue plan schema (v0.1–v0.5).
+"""Pydantic models for the dj-segue plan schema (v0.1–v0.9).
 
-The shape mirrors `docs/schema-v0.8.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.9.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -181,13 +181,25 @@ class Deck(BaseModel):
     label: str | None = None
 
 
+class TempoChange(BaseModel):
+    """v0.9: a change in the mix tempo at `at`: a step to `bpm`, or with
+    `ramp`, a ramp to it (linear in time) that starts at `at` and lasts
+    `ramp` (mix beats counted through the ramp, or seconds)."""
+
+    model_config = _FORBID
+    at: MixPosition
+    bpm: float = Field(gt=0)
+    ramp: Duration | None = None
+
+
 class Meta(BaseModel):
     model_config = _FORBID
     mix_name: str
     author: str | None = None
     source_prompt: str | None = None
     created_at: str | None = None
-    mix_tempo: float | None = None
+    mix_tempo: float | None = None  # the starting tempo, with a tempo_map
+    tempo_map: list[TempoChange] = Field(default_factory=list)  # v0.9, in time order
     target_executor: Literal["native", "mixxx"] | None = None
 
 
@@ -488,6 +500,8 @@ class Plan(BaseModel):
                 for name, side in (("out", seg.out), ("in", seg.in_))
                 if side is not None and isinstance(side.curve, PointCurve)
             ]
+        if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8") and self.meta.tempo_map:
+            problems.append("meta.tempo_map requires schema_version 0.9")
         if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"):
             problems += [
                 f"timeline[{i}]: swap_at requires schema_version 0.8"

@@ -150,7 +150,24 @@ function strips() {
 const dur = () => item.end_sec - item.start_sec;
 const xOf = (t) => (t - item.start_sec) / dur() * canvas.clientWidth;
 const tOf = (x) => item.start_sec + x / canvas.clientWidth * dur();
-const beatOf = (t) => (t - item.zero_sec) / item.spb;
+// Beats follow the mix's tempo map: item.grid holds the mix second of every
+// quarter beat (from quarter beat item.grid_first, counted from zero_sec);
+// between them, and past its ends, times are interpolated linearly.
+function beatOf(t) {
+  const g = item.grid, n = g.length;
+  let i = 0, hi = n - 2;
+  while (i < hi) { const m = (i + hi + 1) >> 1; if (g[m] <= t) i = m; else hi = m - 1; }
+  return (item.grid_first + i + (t - g[i]) / (g[i + 1] - g[i])) / 4;
+}
+function timeOf(b) {
+  const g = item.grid, q = b * 4 - item.grid_first;
+  const i = Math.max(0, Math.min(g.length - 2, Math.floor(q)));
+  return g[i] + (q - i) * (g[i + 1] - g[i]);
+}
+const beatsBetween = (a, b) => Math.round((beatOf(b) - beatOf(a)) * 100) / 100;
+// Snap a time to the beat (or quarter beat), and move a time by n beats.
+const snapBeat = (t, quarter) => { const q = quarter ? 0.25 : 1; return timeOf(Math.round(beatOf(t) / q) * q); };
+const plusBeats = (t, n) => timeOf(beatOf(t) + n);
 const fmtBeat = (t) => { const b = Math.round(beatOf(t) * 100) / 100; return (b > 0 ? "+" : "") + b; };
 const blendStart = () => Math.min(state.out.start, state.in.start);
 const blendEnd = () => Math.max(state.out.end, state.in.end, isEcho() ? state.echo.end : -Infinity);
@@ -241,7 +258,7 @@ function draw() {
   const first = Math.ceil(beatOf(item.start_sec)), last = Math.floor(beatOf(item.end_sec));
   ctx.font = "11px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (let b = first; b <= last; b++) {
-    const x = xOf(item.zero_sec + b * item.spb), bar = b % 4 === 0;
+    const x = xOf(timeOf(b)), bar = b % 4 === 0;
     ctx.fillStyle = css("--line");
     ctx.globalAlpha = bar ? 1 : 0.5;
     ctx.fillRect(Math.round(x), RULER - (bar ? 8 : 4), 1, h);
@@ -498,7 +515,7 @@ function renderFadeSides() {
     const fade = side === "out" ? "out" : "in";
     h2.append(sw, `${isHandoff() ? `Instrumentals ${fade}` : `Fade ${fade}`} — ${deck.label}`);
     const nums = document.createElement("div"); nums.className = "nums";
-    const len = Math.round((win.end - win.start) / item.spb * 100) / 100;
+    const len = beatsBetween(win.start, win.end);
     nums.innerHTML = `beat <b></b> → <b></b> · <b></b> beats`;
     const bs = nums.querySelectorAll("b");
     bs[0].textContent = fmtBeat(win.start); bs[1].textContent = fmtBeat(win.end); bs[2].textContent = String(len);
@@ -547,7 +564,7 @@ function renderEchoSides() {
     const sw = document.createElement("i"); sw.style.background = css(side === "out" ? "--out" : "--in");
     h2.append(sw, text); return h2;
   };
-  const tail = Math.round((e.end - state.out.start) / item.spb * 100) / 100;
+  const tail = beatsBetween(state.out.start, e.end);
   const nums = document.createElement("div"); nums.className = "nums";
   nums.innerHTML = `cut at beat <b></b> · tail <b></b> beats`;
   nums.querySelectorAll("b")[0].textContent = fmtBeat(state.out.start);
@@ -581,7 +598,7 @@ function renderEchoSides() {
     inEl.append(n2);
     return;
   }
-  const len = Math.round((win.end - win.start) / item.spb * 100) / 100;
+  const len = beatsBetween(win.start, win.end);
   n2.innerHTML = `beat <b></b> → <b></b> · <b></b> beats`;
   const bs = n2.querySelectorAll("b");
   bs[0].textContent = fmtBeat(win.start); bs[1].textContent = fmtBeat(win.end); bs[2].textContent = String(len);
@@ -607,7 +624,7 @@ async function loadItem(index) {
   state = structuredClone(item.state);
   good = structuredClone(state);
   renderStemPick(); renderParams();
-  cursor = Math.max(0, blendStart() - 8 * item.spb - item.start_sec);
+  cursor = Math.max(0, plusBeats(blendStart(), -8) - item.start_sec);
   if (!audioCtx) audioCtx = new AudioContext({ sampleRate: item.sample_rate });
   await requestPreview();
 }
@@ -683,8 +700,8 @@ function play(from) {
   source.connect(audioCtx.destination);
   if (looping) {
     source.loop = true;
-    source.loopStart = Math.max(0, blendStart() - 4 * item.spb - item.start_sec);
-    source.loopEnd = Math.min(buffer.duration, blendEnd() + 4 * item.spb - item.start_sec);
+    source.loopStart = Math.max(0, plusBeats(blendStart(), -4) - item.start_sec);
+    source.loopEnd = Math.min(buffer.duration, plusBeats(blendEnd(), 4) - item.start_sec);
     if (from < source.loopStart || from >= source.loopEnd) from = source.loopStart;
   }
   source.onended = () => { if (source && !source.loop) { source = null; draw(); } };
@@ -771,8 +788,7 @@ canvas.addEventListener("pointerdown", (e) => {
     let kfs = laneKfs(s.deck), i = hitKf(s, x, y);
     if (i < 0) {
       // A new keyframe where you clicked (snapped to the beat).
-      const step = item.spb * (e.altKey ? 0.25 : 1);
-      const t = item.zero_sec + Math.round((tOf(x) - item.zero_sec) / step) * step;
+      const t = snapBeat(tOf(x), e.altKey);
       if (!kfs) kfs = state.lanes[String(s.deck.deck)][laneKey()] = [];
       if (kfs.some(([kt]) => Math.abs(kt - t) < 1e-4)) return;
       kfs.push([t, snapValue(vOfY(s, y)), null]);
@@ -822,8 +838,7 @@ canvas.addEventListener("pointermove", (e) => {
   }
   if (drag.kind === "kf") {
     const kfs = laneKfs(drag.strip.deck), i = drag.i;
-    const step = item.spb * (e.altKey ? 0.25 : 1);
-    let t = item.zero_sec + Math.round((tOf(x) - item.zero_sec) / step) * step;
+    let t = snapBeat(tOf(x), e.altKey);
     const lo = i > 0 ? kfs[i - 1][0] + 1e-3 : -Infinity, hi = i < kfs.length - 1 ? kfs[i + 1][0] - 1e-3 : Infinity;
     t = Math.max(lo, Math.min(hi, t));
     kfs[i] = [t, snapValue(vOfY(drag.strip, y)), kfs[i][2]];
@@ -840,8 +855,9 @@ canvas.addEventListener("pointermove", (e) => {
     draw();
     return;
   }
-  const step = item.spb * (e.altKey ? 0.25 : 1);
-  const snap = (t) => item.zero_sec + Math.round((t - item.zero_sec) / step) * step;
+  const snap = (t) => snapBeat(t, e.altKey), q = e.altKey ? 0.25 : 1;
+  // Moving keeps lengths in beats (through a tempo change, not seconds).
+  const shift = (t, from, to) => plusBeats(t, beatOf(to) - beatOf(from));
   const dt = (x - drag.x0) / canvas.clientWidth * dur(), w0 = drag.win0;
   if (drag.edge === "zero" && Math.abs(x - drag.x0) > 3) drag.edge = dt < 0 ? "start" : "end";
   if (drag.edge === "zero") return;
@@ -852,19 +868,19 @@ canvas.addEventListener("pointermove", (e) => {
   }
   if (drag.edge === "cut") {
     // The cut carries the tail and the incoming fade with it.
-    const c = snap(w0.start + dt), d = c - w0.start;
+    const c = snap(w0.start + dt);
     win.start = win.end = c;
-    state.echo.end = drag.echo0.end + d;
-    state.in.start = drag.in0.start + d; state.in.end = drag.in0.end + d;
+    state.echo.end = shift(drag.echo0.end, w0.start, c);
+    state.in.start = shift(drag.in0.start, w0.start, c); state.in.end = shift(drag.in0.end, w0.start, c);
   } else if (drag.edge === "tail") {
-    state.echo.end = Math.max(snap(drag.echo0.end + dt), win.start + step);
+    state.echo.end = Math.max(snap(drag.echo0.end + dt), plusBeats(win.start, q));
   } else if (drag.edge === "move") {
-    const s = snap(w0.start + dt); win.start = s; win.end = s + (w0.end - w0.start);
-    if (isHandoff() && drag.side === "out") state.swap = drag.swap0 + (s - w0.start);
+    const s = snap(w0.start + dt); win.start = s; win.end = shift(w0.end, w0.start, s);
+    if (isHandoff() && drag.side === "out") state.swap = shift(drag.swap0, w0.start, s);
   } else if (drag.edge === "start") {
-    win.start = Math.min(snap(w0.start + dt), win.end - step);
+    win.start = Math.min(snap(w0.start + dt), plusBeats(win.end, -q));
   } else {
-    win.end = Math.max(snap(w0.end + dt), win.start + step);
+    win.end = Math.max(snap(w0.end + dt), plusBeats(win.start, q));
   }
   if (isEcho() && drag.side === "in" && win.curve === "step" && win.end > win.start) win.curve = "equal_power";
   renderSides(); draw();
@@ -942,7 +958,7 @@ function setPencil(on) {
 $("pencil").onclick = () => setPencil(!pencil);
 
 // -- controls ---------------------------------------------------------------
-$("playBlend").onclick = () => play(Math.max(0, blendStart() - 8 * item.spb - item.start_sec));
+$("playBlend").onclick = () => play(Math.max(0, plusBeats(blendStart(), -8) - item.start_sec));
 $("playCursor").onclick = () => play(cursor);
 $("stop").onclick = () => stop();
 $("loop").onclick = () => {
