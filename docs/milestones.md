@@ -120,6 +120,10 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - Two strips under the decks edit their `eq` (low / mid / high) and `filter` lanes over the region: click adds a keyframe (beat snap, Alt ¼), drag moves, double-click removes. Untouched keyframes keep their text, moved ones their position's form, new ones follow the transition's `start_at` form; new lanes are appended to `automation`. Saving bumps `schema_version` when the edit needs it.
 - Deck waveforms show the audio after EQ, filter and volume; the echo tail is drawn over the outgoing deck. Item labels name the decks, kind and mix beat.
 
+**T8 — Stems.**  (DONE 2026-10-04)
+- Vocal handoffs are items: their instrumental fades edit like a crossfade's; the vocal swap is a marker to drag (written as `swap_at`; "Halfway" resets it). Lanes show the instrumentals' gain, the vocals' as a dashed line.
+- A stem picker next to the lane buttons: on a deck mixed by stems, the strips edit that stem's volume (`stem_volume`) and EQ (`eq` + `stem`). A deck not mixed by stems says so (making it one needs a re-render: add a stem lane in the plan and reopen).
+
 **T6 — A/B snapshots.** Save the current setting as a snapshot, keep editing, switch between snapshots while playing.
 
 **Acceptance test:** The Fancy → Like 'em All blend reshaped in the page with a hand-drawn `in` curve and a moved jump point; saved plan differs from the original only in those keys (comments intact); `dj-segue render` of the saved plan matches what the page played (same sample-level gains; region audio byte-identical).
@@ -139,6 +143,14 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 **Done 2026-10-03 (schema v0.8):** automatic separation of `path` tracks (demucs `htdemucs_ft`, `.[stems]` extra; cached in `.cache/stems`; "other" absorbs the residual so stems sum to the track) instead of hand-made `.npy` files; explicit `stems` still work. `stem_volume` lanes; `vocal_handoff` (instrumentals crossfade, vocals swap at `swap_at` with a 10 ms crossover); per-stem EQ (`eq` lane `stem`, pulled in from M5). Only decks mixed by stems render by stem.
 
 **Acceptance test:** A wordplay-style transition where one track's vocals end on a word and the other track's vocals start on the same word, with drums continuing under the transition.
+
+---
+
+## R1 — Real-time engine  (DONE 2026-10-04)
+
+Pulled forward from the architecture's open question. One engine, run block by block: live playback is computed ~0.4 s ahead of the speakers and is bitwise identical to an offline render (tested: random block sizes, ring buffer through the real callback). Rubber Band library (streaming, ctypes) replaces the CLI; the stretch cache is gone. `play` starts at once; `--from BEAT`; `--watch` applies plan edits while playing (new engine ~0.3 s past what's queued, 20 ms crossfade). All renders changed once (inaudibly) with the new stretcher.
+
+**Next (R2):** tempo map (the mix clock changing tempo; schema change), and live playback in the tune page (play the whole mix, edits applied as you drag).
 
 ---
 

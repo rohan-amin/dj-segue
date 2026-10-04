@@ -1,119 +1,155 @@
-"""Offline time-stretching (tempo change, pitch preserved) via Rubber Band.
+"""Time-stretching (tempo change, pitch preserved), streaming, via the Rubber
+Band library.
 
-Uses the R3 ("--fine") engine: measured on click tracks, onsets land within
-~0.25 ms of their ideal stretched position and output length is exact to the
-sample, which is what beat-locked mixing needs.
+`Stretcher` wraps librubberband's C API (through ctypes) in real-time mode
+with the R3 ("finer") engine: it reads track audio from a start position
+and returns mix-rate audio in whatever pieces you ask for. Measured on click
+tracks, onsets land within ~0.3 ms of their ideal stretched position (as
+with the offline `--fine` CLI it replaces), and it runs ~25× real time per
+stereo stream on Apple silicon.
 
-Calls the `rubberband` command-line tool directly (macOS: `brew install
-rubberband`) through 32-bit float temp files. We don't use pyrubberband: it
-writes 16-bit temp files (quantizing, and clipping anything over 0 dBFS) and
-mutates the args dict passed to it, which leaked one segment's tempo into the
-next.
+Deterministic, and independent of how it's read: input is fed in pieces the
+stretcher itself asks for (`samples_required`), whatever the caller pulls,
+so reading 1 sample at a time or the whole segment at once gives the same
+samples. That's what lets the live engine and an offline render produce
+identical audio.
 
-The rubberband CLI also clamps its output to ±1.0 even for float files, and
-stretching can overshoot the input peak, so we scale the input into
-[-HEADROOM, HEADROOM] and scale the result back (exact: the process is linear).
-
-Stretching is slow (several seconds per minute of audio), so results are
-cached on disk, keyed by a hash of the input samples, the rate, the sample
-rate, the rubberband version and our settings. The cache lives in the
-project's `.cache/stretch` (git-ignored) when running from a source checkout,
-else ~/.cache/dj-segue/stretch. Override with DJ_SEGUE_STRETCH_CACHE (a
-folder, or "off" to disable). Delete the folder any time to reclaim space.
+Needs the Rubber Band library: macOS `brew install rubberband`
+(Debian/Ubuntu: `apt install librubberband-dev`). DJ_SEGUE_RUBBERBAND may
+point at the shared library if it isn't found.
 """
 
 from __future__ import annotations
 
-import hashlib
+import ctypes as C
+import ctypes.util
 import os
-import shutil
-import subprocess
-import tempfile
+from collections.abc import Callable
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
-HEADROOM = 0.5  # input peak fed to rubberband (-6 dBFS)
+_REALTIME = 0x00000001
+_THREADING_NEVER = 0x00010000
+_CHANNELS_TOGETHER = 0x10000000
+_ENGINE_FINER = 0x20000000
+OPTIONS = _REALTIME | _THREADING_NEVER | _CHANNELS_TOGETHER | _ENGINE_FINER
+
+CHUNK = 1024  # most input frames fed per process() call
+_FP = C.POINTER(C.c_float)
 
 
-ARGS = ("--quiet", "--fine")
-CACHE_ENV = "DJ_SEGUE_STRETCH_CACHE"
+@lru_cache(maxsize=1)
+def _lib() -> C.CDLL:
+    candidates = [
+        os.environ.get("DJ_SEGUE_RUBBERBAND"),
+        ctypes.util.find_library("rubberband"),
+        "/opt/homebrew/opt/rubberband/lib/librubberband.dylib",
+        "/usr/local/opt/rubberband/lib/librubberband.dylib",
+        "librubberband.so.3",
+        "librubberband.so",
+    ]
+    for path in filter(None, candidates):
+        try:
+            lib = C.CDLL(path)
+            break
+        except OSError:
+            continue
+    else:
+        raise RuntimeError(
+            "time-stretching needs the Rubber Band library "
+            "(macOS: brew install rubberband; Debian/Ubuntu: apt install librubberband-dev); "
+            "set DJ_SEGUE_RUBBERBAND to its path if it's installed somewhere unusual"
+        )
+    lib.rubberband_new.restype = C.c_void_p
+    lib.rubberband_new.argtypes = [C.c_uint, C.c_uint, C.c_int, C.c_double, C.c_double]
+    lib.rubberband_delete.argtypes = [C.c_void_p]
+    lib.rubberband_set_max_process_size.argtypes = [C.c_void_p, C.c_uint]
+    for name in ("get_samples_required", "get_preferred_start_pad", "get_start_delay"):
+        fn = getattr(lib, f"rubberband_{name}")
+        fn.argtypes, fn.restype = [C.c_void_p], C.c_uint
+    lib.rubberband_process.argtypes = [C.c_void_p, C.POINTER(_FP), C.c_uint, C.c_int]
+    lib.rubberband_available.argtypes, lib.rubberband_available.restype = [C.c_void_p], C.c_int
+    lib.rubberband_retrieve.argtypes = [C.c_void_p, C.POINTER(_FP), C.c_uint]
+    lib.rubberband_retrieve.restype = C.c_uint
+    return lib
+
+
+class Stretcher:
+    """Mix-rate audio from `read(start, n)` (track frames × 2, float32),
+    starting at track frame `start`, played `rate` times faster.
+
+    `pull(n)` returns the next n output frames. Output frame k corresponds
+    to track time start + k·rate (the stretcher's own delay is removed).
+    Reads past the track's ends come back as silence from `read`.
+    """
+
+    def __init__(
+        self, read: Callable[[int, int], np.ndarray], start: int, rate: float, sample_rate: int
+    ) -> None:
+        if rate <= 0:
+            raise ValueError(f"rate must be positive, got {rate}")
+        lib = _lib()
+        self._lib = lib
+        self._read = read
+        self._pos = start
+        self._st = lib.rubberband_new(sample_rate, 2, OPTIONS, 1.0 / rate, 1.0)
+        lib.rubberband_set_max_process_size(self._st, CHUNK)
+        self._chunks: list[np.ndarray] = []  # output not yet pulled
+        self._have = 0
+        self._obuf = [np.zeros(4 * CHUNK, dtype=np.float32) for _ in range(2)]
+        pad = lib.rubberband_get_preferred_start_pad(self._st)
+        self._skip = lib.rubberband_get_start_delay(self._st)
+        if pad:
+            self._process(np.zeros((pad, 2), dtype=np.float32))
+
+    def __del__(self) -> None:
+        st = getattr(self, "_st", None)
+        if st:
+            self._lib.rubberband_delete(st)
+            self._st = None
+
+    def pull(self, n: int) -> np.ndarray:
+        while self._have < n:
+            need = self._lib.rubberband_get_samples_required(self._st) or CHUNK
+            need = min(need, CHUNK)
+            self._process(self._read(self._pos, need))
+            self._pos += need
+        y = self._chunks[0] if len(self._chunks) == 1 else np.concatenate(self._chunks)
+        out, rest = y[:n], y[n:]
+        self._chunks, self._have = ([rest] if len(rest) else []), len(rest)
+        return out
+
+    def _process(self, x: np.ndarray) -> None:
+        chans = [np.ascontiguousarray(x[:, c], dtype=np.float32) for c in range(2)]
+        ptrs = (_FP * 2)(*[c.ctypes.data_as(_FP) for c in chans])
+        self._lib.rubberband_process(self._st, ptrs, len(x), 0)
+        got = []
+        while (avail := self._lib.rubberband_available(self._st)) > 0:
+            optrs = (_FP * 2)(*[b.ctypes.data_as(_FP) for b in self._obuf])
+            k = self._lib.rubberband_retrieve(self._st, optrs, min(avail, len(self._obuf[0])))
+            got.append(np.stack([self._obuf[0][:k], self._obuf[1][:k]], axis=1))  # copies
+        if not got:
+            return
+        y = np.concatenate(got)
+        if self._skip:
+            drop = min(self._skip, len(y))
+            y, self._skip = y[drop:], self._skip - drop
+        if len(y):
+            self._chunks.append(y)
+            self._have += len(y)
 
 
 def time_stretch(audio: np.ndarray, sample_rate: int, rate: float) -> np.ndarray:
-    """Play `audio` (frames × channels, float32) `rate` times faster.
-
-    rate > 1 speeds up (shorter output), rate < 1 slows down. Output has
-    ≈ len(audio) / rate frames; callers trim/pad to the exact length they need.
-    """
-    if rate <= 0:
-        raise ValueError(f"rate must be positive, got {rate}")
+    """`audio` played `rate` times faster: round(len / rate) frames."""
     if rate == 1.0:
         return audio
-    exe = _rubberband()
-    cache = _cache_file(exe, audio, sample_rate, rate)
-    if cache is not None and cache.exists():
-        try:
-            return np.load(cache)
-        except (OSError, ValueError):
-            pass  # unreadable entry: recompute and overwrite
-    out = _run_rubberband(exe, audio, sample_rate, rate)
-    if cache is not None:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache.with_name(f"{cache.stem}.{os.getpid()}.{id(out)}.tmp.npy")
-        np.save(tmp, out)
-        os.replace(tmp, cache)  # atomic: concurrent writers can't leave a torn file
-    return out
 
+    def read(start: int, n: int) -> np.ndarray:
+        out = np.zeros((n, 2), dtype=np.float32)
+        lo, hi = max(start, 0), min(start + n, len(audio))
+        if hi > lo:
+            out[lo - start : hi - start] = audio[lo:hi]
+        return out
 
-def default_cache_dir() -> Path:
-    """`<project>/.cache/stretch` in a source checkout, else ~/.cache/dj-segue/stretch."""
-    project = Path(__file__).resolve().parents[4]  # src/dj_segue/executor/native/
-    if (project / "pyproject.toml").exists() and (project / "src" / "dj_segue").is_dir():
-        return project / ".cache" / "stretch"
-    return Path.home() / ".cache" / "dj-segue" / "stretch"
-
-
-def _rubberband() -> str:
-    exe = shutil.which("rubberband")
-    if exe is None:
-        raise RuntimeError(
-            "time-stretching needs the `rubberband` CLI "
-            "(macOS: brew install rubberband; Debian/Ubuntu: apt install rubberband-cli)"
-        )
-    return exe
-
-
-@lru_cache(maxsize=4)
-def _rubberband_version(exe: str) -> str:
-    r = subprocess.run([exe, "--version"], capture_output=True, text=True)
-    return (r.stdout + r.stderr).strip()
-
-
-def _cache_file(exe: str, audio: np.ndarray, sample_rate: int, rate: float) -> Path | None:
-    root = os.environ.get(CACHE_ENV) or str(default_cache_dir())
-    if root.lower() == "off":
-        return None
-    a = np.ascontiguousarray(audio, dtype=np.float32)
-    h = hashlib.blake2b(digest_size=20)
-    h.update(repr((a.shape, sample_rate, float(rate), HEADROOM, ARGS)).encode())
-    h.update(_rubberband_version(exe).encode())
-    h.update(a.tobytes())
-    return Path(root).expanduser() / f"{h.hexdigest()}.npy"
-
-
-def _run_rubberband(exe: str, audio: np.ndarray, sample_rate: int, rate: float) -> np.ndarray:
-    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
-    gain = peak / HEADROOM if peak > 0 else 1.0
-    with tempfile.TemporaryDirectory(prefix="dj-segue-rb-") as tmp:
-        src, dst = Path(tmp) / "in.wav", Path(tmp) / "out.wav"
-        sf.write(src, audio / gain, sample_rate, subtype="FLOAT")
-        subprocess.run(
-            [exe, *ARGS, "--tempo", repr(float(rate)), str(src), str(dst)],
-            check=True,
-            capture_output=True,
-        )
-        out, _ = sf.read(dst, dtype="float32", always_2d=True)
-    return out * np.float32(gain)
+    return Stretcher(read, 0, rate, sample_rate).pull(int(round(len(audio) / rate)))

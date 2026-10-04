@@ -96,6 +96,15 @@ Every event resolves to a sample-accurate mix-time at compile time. There are no
 
 The engine must support rendering a plan to a WAV file without using a real audio device. This is non-negotiable; it's what makes the engine testable. Live audio output is one mode of the executor; offline rendering is another.
 
+### Real-time: one engine, block by block; live == offline.  (settled 2026-10-04)
+
+Live playback computes the mix a few hundred ms ahead of the speakers. Every stage of the native engine — deck sources (time-stretch, seams, loops), deck chains (stems, EQ, filter, volume), echo tails, the limiter — carries its state between blocks, so running it block by block (live) and over the whole mix at once (offline) gives **bitwise identical** audio, whatever the block sizes. Tests enforce this.
+
+- Time-stretching uses the Rubber Band **library** in real-time mode (R3 "finer" engine) through ctypes, fed in pieces the stretcher asks for, so its output doesn't depend on how it's read. Onset accuracy ≈ the offline CLI it replaced (≤ 0.3 ms); ~25× real time per stereo stream. The stretch cache is gone (not needed at that speed).
+- `play` runs a producer thread that keeps a lock-free SPSC ring buffer ~0.4 s ahead; the sounddevice callback only copies out of it.
+- Plans can change while playing (`play --watch`): a new engine for the new plan starts ~0.3 s past what's queued (warmed up from 1 s earlier) and takes over with a 20 ms crossfade. Starting part-way (a seek, a reload) sounds right but isn't bit-identical to playing from the top (stretchers and filters restart; spectra match within ~0.5 dB after a beat, beats land within 0.4 ms).
+- Measured: the Fancy → Like 'em All → Bottoms Up mix runs 18× real time; with two decks mixed by stems, 5×.
+
 ---
 
 ## Module layout
@@ -167,7 +176,7 @@ Pinned in `pyproject.toml`. Approximate set:
 | Audio I/O            | `sounddevice`              |
 | File decode          | `soundfile`                |
 | Analysis             | `librosa` (M1), maybe `essentia` later |
-| Time-stretch         | `rubberband` CLI (system install; called directly, not via pyrubberband) |
+| Time-stretch         | Rubber Band library (system install), streaming, via ctypes |
 | Effects (EQ/filter)  | `pedalboard` (Spotify) and/or `scipy.signal` |
 | Stem separation      | `demucs` (optional, behind a flag) |
 | Schema validation    | `pydantic` v2             |
@@ -182,4 +191,6 @@ Python 3.11+. We use match statements, `typing.Self`, modern type hints througho
 
 ## Open questions (revisit before locking)
 
-**Real-time rendering (raised 2026-09-30).** Goal: compute audio a few hundred ms ahead of the playhead so tempo, curves and positions can change during playback. Proposed shape: a block-based engine used for both live and offline rendering (so they stay byte-identical), the Rubber Band library in streaming mode instead of the CLI, a render thread filling the lock-free ring buffer, and a tempo map in `time_math` in place of a single mix tempo. Next step: a spike to check streaming stretch quality and determinism, and whether Python can keep the buffer full without dropouts. Settled decisions unaffected: score-style plans, deterministic compile, lock-free callback, headless rendering.
+**Tempo map (raised 2026-09-30, deferred 2026-10-04).** The real-time engine is settled (above); what's left of that question is changing the mix tempo partway through (e.g. Bottoms Up taking over the clock after an echo out): a tempo map in `time_math` in place of the single mix tempo, and a schema change. Next session, with live playback in the tune page.
+
+**Memory.** Offline, every deck (and stem) is held full-length; the live engine also keeps full-length mix buffers. Fine for a 10-minute mix; a long set would want rolling buffers.

@@ -315,3 +315,92 @@ def test_lane_values_are_checked(echo_session) -> None:
     st["lanes"]["2"]["mid"] = [[1.0, -40, None]]
     r = echo_session.preview(2, st)
     assert not r["ok"] and "outside -24" in r["issues"][0]
+
+
+# --- vocal handoff and stem lanes (v0.8) ----------------------------------------
+
+HANDOFF_PLAN = """{
+  "schema_version": "0.7",
+  "meta": { "mix_name": "h", "mix_tempo": 120 },
+  "tracks": {
+    "a": { "stems": { "vocals": "av.wav", "drums": "ad.wav" }, "bpm": 120 },
+    "b": { "stems": { "vocals": "bv.wav", "drums": "bd.wav" }, "bpm": 120 },
+    "c": { "path": "c.wav", "bpm": 120 }
+  },
+  "decks": { "1": {}, "2": {}, "3": {} },
+  "timeline": [
+    { "type": "play", "deck": 1, "track": "a",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 0 } },
+    { "type": "play", "deck": 2, "track": "b",
+      "from": { "beat": 0 }, "to": { "beat": 32 }, "start_at": { "beat": 8 } },
+    { "type": "transition", "style": "vocal_handoff", "from_deck": 1, "to_deck": 2,
+      "start_at": { "beat": 16 }, "duration": { "beats": 8 } },
+    { "type": "play", "deck": 3, "track": "c",
+      "from": { "beat": 0 }, "to": { "beat": 40 }, "start_at": { "beat": 0 } }
+  ]
+}
+"""
+
+
+@pytest.fixture
+def handoff_session(tmp_path):
+    rng = np.random.default_rng(3)
+    for name in ("av", "ad", "bv", "bd", "c"):
+        sf.write(tmp_path / f"{name}.wav", (0.1 * rng.standard_normal(60 * BEAT)).astype(np.float32),
+                 SR, subtype="FLOAT")
+    plan = tmp_path / "h.plan.jsonc"
+    plan.write_text(HANDOFF_PLAN)
+    s = TuneSession(plan, tmp_path)
+    s.load()
+    return s
+
+
+def test_handoff_item_and_swap_edit(handoff_session, tmp_path) -> None:
+    s = handoff_session
+    (it,) = s.items()
+    assert it.style == "vocal_handoff" and "vocal handoff" in s.label(it)
+    d = s.describe(2)
+    assert d["state"]["swap"] == _beats(s, 20)  # halfway
+    assert d["stems"] == {"1": ["vocals", "drums"], "2": ["vocals", "drums"]}
+    assert "vol@vocals" in d["state"]["lanes"]["1"]
+    r = s.preview(2, d["state"])
+    assert r["ok"] and r["changes"] == {} and set(r["vocal_gains"]) == {"1", "2"}
+
+    st = d["state"]
+    st["swap"] = _beats(s, 22)
+    r = s.preview(2, st)
+    assert r["ok"], r
+    assert r["changes"] == {"swap_at": {"offset": {"beats": 6}}}
+    assert r["plan_changes"] == {"schema_version": "0.8"}
+    page, _ = sf.read(io.BytesIO(s.audio[r["version"]]), dtype="float32")
+    assert s.save(2, st)["saved"]
+    fresh = TuneSession(s.plan_path, tmp_path)
+    full = NativeEngine().render(fresh.plan, tmp_path, fresh.grids).samples
+    np.testing.assert_array_equal(page, full[it.start : it.end])
+
+
+def test_swap_outside_the_window_is_refused(handoff_session) -> None:
+    st = handoff_session.describe(2)["state"]
+    st["swap"] = _beats(handoff_session, 26)
+    assert not handoff_session.preview(2, st)["ok"]
+
+
+def test_stem_lanes_save_and_play_exactly(handoff_session, tmp_path) -> None:
+    s = handoff_session
+    st = s.describe(2)["state"]
+    st["lanes"]["1"]["vol@vocals"] = [[_beats(s, 4), 1, None], [_beats(s, 8), 0.5, None]]
+    st["lanes"]["2"]["low@drums"] = [[_beats(s, 10), -12, None]]
+    r = s.preview(2, st)
+    assert r["ok"], r
+    assert r["lane_changes"] == ["new lane: deck 1 vocals volume, 2 keyframes",
+                                 "new lane: deck 2 drums low, 1 keyframes"]
+    assert r["plan_changes"] == {"schema_version": "0.8"}
+    page, _ = sf.read(io.BytesIO(s.audio[r["version"]]), dtype="float32")
+    it = s.item(2)
+    assert s.save(2, st)["saved"]
+    text = s.plan_path.read_text()
+    assert '"lane": "stem_volume", "deck": 1, "stem": "vocals"' in text
+    assert '"lane": "eq", "deck": 2, "band": "low", "stem": "drums"' in text
+    fresh = TuneSession(s.plan_path, tmp_path)
+    full = NativeEngine().render(fresh.plan, tmp_path, fresh.grids).samples
+    np.testing.assert_array_equal(page, full[it.start : it.end])

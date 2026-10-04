@@ -13,10 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _stretch_cache_in_tmp(tmp_path_factory):
-    """Keep test stretches out of the user's ~/.cache."""
+def _stem_cache_in_tmp(tmp_path_factory):
+    """Keep test stems out of the project's .cache/stems."""
     mp = pytest.MonkeyPatch()
-    mp.setenv("DJ_SEGUE_STRETCH_CACHE", str(tmp_path_factory.mktemp("stretch-cache")))
+    mp.setenv("DJ_SEGUE_STEM_CACHE", str(tmp_path_factory.mktemp("stem-cache")))
     yield
     mp.undo()
 

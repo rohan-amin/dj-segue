@@ -71,7 +71,8 @@
     <div class="label">
       <span>Beats count from the transition's start. Drag a window's edges, or its middle to move it.
         <button id="pencil" title="Draw a curve (D)">✎ Draw</button>
-        <span class="params" id="params"></span></span>
+        <span class="params" id="params"></span>
+        <select id="stemPick" aria-label="Lanes for" hidden></select></span>
       <span class="keys"><kbd>Space</kbd> play/stop · <kbd>Alt</kbd>-drag snaps to ¼ beat · click the ruler to set the cursor<br>
         <kbd>D</kbd> draw: paint over a fade, <kbd>Shift</kbd> for a straight line · drawn curves: drag points, double-click to add or remove one<br>
         lower strips (EQ / filter): click to add a keyframe, drag to move, double-click to remove</span>
@@ -115,8 +116,15 @@ let good = null;          // last state the server accepted
 let gains = null, gainRate = 100, peaksOn = null, tailPeaks = null;
 let laneChanges = [];
 let param = "low";        // which lane the lower strips show
+let stemSel = "";         // "" = the whole deck, else a stem
+let vocalGains = null;
 const PARAMS = [["low", "Low"], ["mid", "Mid"], ["high", "High"], ["filter", "Filter"]];
-const RANGE = { low: [-24, 12], mid: [-24, 12], high: [-24, 12], filter: [-1, 1] };
+const STEM_PARAMS = [["vol", "Volume"], ["low", "Low"], ["mid", "Mid"], ["high", "High"]];
+const kindOf = (p) => (p === "filter" ? "filter" : p === "vol" ? "vol" : "eq");
+const RANGE = { eq: [-24, 12], filter: [-1, 1], vol: [0, 1] };
+const NEUTRAL = { eq: 0, filter: 0, vol: 1 };
+const laneKey = () => (stemSel ? `${param}@${stemSel}` : param);
+const isHandoff = () => item && item.style === "vocal_handoff";
 const EVERY = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
 const isEcho = () => item && item.style === "echo_out";
 let changes = {};
@@ -324,6 +332,24 @@ function drawLane(lane, deck, side) {
     }
   }
 
+  // Vocal handoff: the vocals' gain (dashed) and the swap marker.
+  if (isHandoff()) {
+    const vg = vocalGains && vocalGains[String(deck.deck)];
+    if (vg) {
+      ctx.save(); ctx.setLineDash([4, 3]); ctx.strokeStyle = css("--kf"); ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let px = 0; px <= w; px += 2) {
+        const y = lane.top + 2 + (1 - vg[Math.min(vg.length - 1, Math.floor(px / w * vg.length))]) * (lane.h - 4);
+        px ? ctx.lineTo(px, y) : ctx.moveTo(px, y);
+      }
+      ctx.stroke(); ctx.restore();
+    }
+    const sx = xOf(state.swap);
+    ctx.fillStyle = css("--kf"); ctx.fillRect(sx - 1, lane.top, 2, lane.h);
+    ctx.beginPath(); ctx.moveTo(sx - 6, lane.top + lane.h - 1); ctx.lineTo(sx + 6, lane.top + lane.h - 1);
+    ctx.lineTo(sx, lane.top + lane.h - 10); ctx.fill();
+  }
+
   // Handles.
   const handles = echoOut ? [win.start, state.echo.end] : win.start === win.end ? [win.start] : [win.start, win.end];
   for (const t of handles) {
@@ -336,11 +362,12 @@ function drawLane(lane, deck, side) {
 }
 
 // -- automation strips (EQ / filter) ----------------------------------------
-const laneKfs = (deck) => state.lanes[String(deck.deck)][param];
-const [vLo, vHi] = [() => RANGE[param][0], () => RANGE[param][1]];
+// undefined: this deck has no such lane to edit (not mixed by stems).
+const laneKfs = (deck) => state.lanes[String(deck.deck)][laneKey()];
+const [vLo, vHi] = [() => RANGE[kindOf(param)][0], () => RANGE[kindOf(param)][1]];
 const yOfV = (s, v) => s.top + 3 + (vHi() - v) / (vHi() - vLo()) * (s.h - 6);
 const vOfY = (s, y) => Math.max(vLo(), Math.min(vHi(), vHi() - (y - s.top - 3) / (s.h - 6) * (vHi() - vLo())));
-const neutral = () => 0;
+const neutral = () => NEUTRAL[kindOf(param)];
 
 function valueAt(kfs, t) {
   if (!kfs || !kfs.length) return neutral();
@@ -355,6 +382,7 @@ function valueAt(kfs, t) {
 }
 
 function fmtVal(v) {
+  if (param === "vol") return `${Math.round(v * 100)}%`;
   return param === "filter"
     ? (v === 0 ? "off" : `${v < 0 ? "LP" : "HP"} ${Math.abs(v).toFixed(2)}`)
     : `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
@@ -363,7 +391,12 @@ function fmtVal(v) {
 function drawStrip(s) {
   const w = canvas.clientWidth, kfs = laneKfs(s.deck);
   ctx.fillStyle = css("--btn"); ctx.fillRect(0, s.top, w, s.h);
-  ctx.fillStyle = css("--line"); ctx.fillRect(0, Math.round(yOfV(s, 0)), w, 1);
+  if (kfs === undefined) {
+    label(`${stemSel} · ${s.deck.label} · not mixed by stems (add a stem lane in the plan and reopen)`,
+      s.top + 2, 11);
+    return;
+  }
+  ctx.fillStyle = css("--line"); ctx.fillRect(0, Math.round(yOfV(s, neutral())), w, 1);
   ctx.strokeStyle = css("--kf"); ctx.lineWidth = 2; ctx.globalAlpha = kfs ? 1 : 0.35;
   ctx.beginPath();
   for (let px = 0; px <= w; px += 2) {
@@ -376,8 +409,8 @@ function drawStrip(s) {
     ctx.beginPath(); ctx.arc(xOf(t), yOfV(s, valueAt(kfs, t)), 4.5, 0, 2 * Math.PI);
     ctx.fillStyle = css("--panel"); ctx.fill(); ctx.strokeStyle = css("--kf"); ctx.lineWidth = 2; ctx.stroke();
   }
-  const name = PARAMS.find(([p]) => p === param)[1];
-  let text = `${name} · ${s.deck.label}`;
+  const name = (stemSel ? STEM_PARAMS : PARAMS).find(([p]) => p === param)[1];
+  let text = `${stemSel ? stemSel + " " : ""}${name} · ${s.deck.label}`;
   const hover = drag && drag.kind === "kf" && drag.deck === s.deck.deck ? kfs[drag.i] : null;
   if (hover) text += ` · ${fmtVal(hover[1])}`;
   else if (!kfs) text += " · click to add a keyframe";
@@ -407,14 +440,30 @@ function hitKf(s, x, y) {
 }
 
 function snapValue(v) {
-  const step = param === "filter" ? 0.01 : 0.5;
+  const kind = kindOf(param), step = kind === "eq" ? 0.5 : 0.01;
   v = Math.round(v / step) * step;
-  return Math.abs(v) < (param === "filter" ? 0.05 : 0.75) ? 0 : v;  // stick to neutral
+  const stick = { eq: 0.75, filter: 0.05, vol: 0.03 }[kind];  // stick to neutral (and 0 for volume)
+  if (Math.abs(v - neutral()) < stick) return neutral();
+  return kind === "vol" && v < stick ? 0 : v;
+}
+
+function renderStemPick() {
+  const el = $("stemPick"), stems = [...new Set(Object.values(item.stems).flat())];
+  el.hidden = stems.length === 0;
+  el.innerHTML = "";
+  for (const v of ["", ...stems]) {
+    const o = document.createElement("option"); o.value = v; o.textContent = v ? `${v} stem` : "Whole deck";
+    el.append(o);
+  }
+  if (!stems.includes(stemSel)) stemSel = "";
+  el.value = stemSel;
 }
 
 function renderParams() {
   const el = $("params"); el.innerHTML = "";
-  for (const [p, label] of PARAMS) {
+  const list = stemSel ? STEM_PARAMS : PARAMS;
+  if (!list.some(([p]) => p === param)) param = list[0][0];
+  for (const [p, label] of list) {
     const b = document.createElement("button"); b.textContent = label;
     b.classList.toggle("on", p === param);
     b.onclick = () => { param = p; renderParams(); draw(); };
@@ -425,13 +474,29 @@ function renderParams() {
 // -- side panels ------------------------------------------------------------
 function renderSides() {
   if (isEcho()) return renderEchoSides();
+  renderFadeSides();
+  if (isHandoff()) {
+    const row = document.createElement("div"); row.className = "row";
+    const name = document.createElement("span"); name.textContent = "Vocals";
+    const t = document.createElement("span"); t.className = "nums";
+    t.innerHTML = `swap at beat <b></b> (dashed line; drag the marker)`;
+    t.querySelector("b").textContent = fmtBeat(state.swap);
+    const half = document.createElement("button"); half.textContent = "Halfway";
+    half.onclick = () => { state.swap = (state.out.start + state.out.end) / 2; requestPreview(); };
+    row.append(name, t, half);
+    $("side-out").append(row);
+  }
+}
+
+function renderFadeSides() {
   for (const side of ["out", "in"]) {
     const deck = item.decks[side === "out" ? 0 : 1], win = state[side];
     const el = $("side-" + side);
     el.innerHTML = "";
     const h2 = document.createElement("h2");
     const sw = document.createElement("i"); sw.style.background = css(side === "out" ? "--out" : "--in");
-    h2.append(sw, `${side === "out" ? "Fade out" : "Fade in"} — ${deck.label}`);
+    const fade = side === "out" ? "out" : "in";
+    h2.append(sw, `${isHandoff() ? `Instrumentals ${fade}` : `Fade ${fade}`} — ${deck.label}`);
     const nums = document.createElement("div"); nums.className = "nums";
     const len = Math.round((win.end - win.start) / item.spb * 100) / 100;
     nums.innerHTML = `beat <b></b> → <b></b> · <b></b> beats`;
@@ -541,6 +606,7 @@ async function loadItem(index) {
   item = await (await fetch(`/item/${index}`)).json();
   state = structuredClone(item.state);
   good = structuredClone(state);
+  renderStemPick(); renderParams();
   cursor = Math.max(0, blendStart() - 8 * item.spb - item.start_sec);
   if (!audioCtx) audioCtx = new AudioContext({ sampleRate: item.sample_rate });
   await requestPreview();
@@ -565,7 +631,7 @@ async function requestPreview() {
   $("issues").textContent = "";
   good = structuredClone(state);
   gains = res.gains; gainRate = res.gain_rate;
-  peaksOn = res.peaks; tailPeaks = res.tail_peaks;
+  peaksOn = res.peaks; tailPeaks = res.tail_peaks; vocalGains = res.vocal_gains;
   changes = res.changes; laneChanges = res.lane_changes || [];
   const keys = Object.keys(changes);
   const lines = keys.map((k) => changes[k] === null ? `remove "${k}"` : `"${k}": ${JSON.stringify(changes[k])}`);
@@ -661,6 +727,7 @@ function hit(x, y) {
   if (win.start === win.end) {
     return Math.abs(x - xOf(win.start)) < 8 ? { side, edge: "zero" } : null;
   }
+  if (isHandoff() && Math.abs(x - xOf(state.swap)) < 7) return { side, edge: "swap" };
   if (isDrawn(win.curve)) {
     const pts = win.curve.points;
     for (let i = 1; i < pts.length - 1; i++) {  // endpoints are fixed
@@ -700,12 +767,13 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   const s = stripAt(y);
   if (s) {
+    if (laneKfs(s.deck) === undefined) return;
     let kfs = laneKfs(s.deck), i = hitKf(s, x, y);
     if (i < 0) {
       // A new keyframe where you clicked (snapped to the beat).
       const step = item.spb * (e.altKey ? 0.25 : 1);
       const t = item.zero_sec + Math.round((tOf(x) - item.zero_sec) / step) * step;
-      if (!kfs) kfs = state.lanes[String(s.deck.deck)][param] = [];
+      if (!kfs) kfs = state.lanes[String(s.deck.deck)][laneKey()] = [];
       if (kfs.some(([kt]) => Math.abs(kt - t) < 1e-4)) return;
       kfs.push([t, snapValue(vOfY(s, y)), null]);
       kfs.sort((a, b) => a[0] - b[0]);
@@ -728,7 +796,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const h = hit(x, y);
   if (!h) return;
   canvas.setPointerCapture(e.pointerId);
-  drag = { ...h, x0: x, win0: structuredClone(state[h.side]),
+  drag = { ...h, x0: x, win0: structuredClone(state[h.side]), swap0: state.swap,
            in0: structuredClone(state.in), echo0: isEcho() ? structuredClone(state.echo) : null };
 });
 
@@ -777,6 +845,11 @@ canvas.addEventListener("pointermove", (e) => {
   const dt = (x - drag.x0) / canvas.clientWidth * dur(), w0 = drag.win0;
   if (drag.edge === "zero" && Math.abs(x - drag.x0) > 3) drag.edge = dt < 0 ? "start" : "end";
   if (drag.edge === "zero") return;
+  if (drag.edge === "swap") {
+    state.swap = Math.max(state.out.start, Math.min(state.out.end, snap(drag.swap0 + dt)));
+    renderSides(); draw();
+    return;
+  }
   if (drag.edge === "cut") {
     // The cut carries the tail and the incoming fade with it.
     const c = snap(w0.start + dt), d = c - w0.start;
@@ -787,6 +860,7 @@ canvas.addEventListener("pointermove", (e) => {
     state.echo.end = Math.max(snap(drag.echo0.end + dt), win.start + step);
   } else if (drag.edge === "move") {
     const s = snap(w0.start + dt); win.start = s; win.end = s + (w0.end - w0.start);
+    if (isHandoff() && drag.side === "out") state.swap = drag.swap0 + (s - w0.start);
   } else if (drag.edge === "start") {
     win.start = Math.min(snap(w0.start + dt), win.end - step);
   } else {
@@ -822,7 +896,7 @@ canvas.addEventListener("pointerup", () => {
   const win = state[d.side];
   if (d.edge === "point") {
     if (d.moved) { setDrawn(d.side, win.curve.points); requestPreview(); }
-  } else if (d.win0.start !== win.start || d.win0.end !== win.end ||
+  } else if (d.win0.start !== win.start || d.win0.end !== win.end || d.swap0 !== state.swap ||
              (d.echo0 && d.echo0.end !== state.echo.end)) requestPreview();
   else draw();
 });
@@ -839,7 +913,7 @@ canvas.addEventListener("dblclick", (e) => {
       return;
     }
     kfs.splice(i, 1);
-    if (!kfs.length) state.lanes[key][param] = null;
+    if (!kfs.length) state.lanes[key][laneKey()] = null;
     requestPreview();
     return;
   }
@@ -878,6 +952,7 @@ $("loop").onclick = () => {
 $("save").onclick = save;
 $("revert").onclick = () => { state = structuredClone(item.state); requestPreview(); };
 $("pick").onchange = () => { stop(); loadItem(Number($("pick").value)); };
+$("stemPick").onchange = () => { stemSel = $("stemPick").value; renderParams(); draw(); };
 document.addEventListener("keydown", (e) => {
   if (e.code === "KeyD" && !e.metaKey && !e.ctrlKey && e.target.tagName !== "SELECT") {
     setPencil(!pencil);
@@ -900,7 +975,7 @@ async function waitUntilRendered() {
     const frac = st.total ? st.done / st.total : 0;
     $("loadbar").style.width = `${Math.round(frac * 100)}%`;
     $("loadtext").textContent = st.total
-      ? `Rendering the decks: ${st.done} of ${st.total} segments (time-stretching; cached for next time)…`
+      ? `Rendering the decks: ${st.done} of ${st.total} (decks and stems)…`
       : "Rendering the decks…";
     await new Promise((r) => setTimeout(r, 300));
   }

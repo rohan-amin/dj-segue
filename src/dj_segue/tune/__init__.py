@@ -40,7 +40,7 @@ import numpy as np
 import soundfile as sf
 from pydantic import ValidationError
 
-from dj_segue.compiler import resolve_timeline
+from dj_segue.compiler import VOCAL_SWAP_SEC, resolve_timeline
 from dj_segue.executor.native import NativeEngine
 from dj_segue.executor.native.engine import DeckRender
 from dj_segue.schema import PlanValidationError, jsonc, validate_against_audio, validate_plan
@@ -51,6 +51,7 @@ from dj_segue.schema.plan import (
     EqLane,
     FilterLane,
     Plan,
+    StemVolumeLane,
     SecondPos,
     TransitionSegment,
 )
@@ -58,12 +59,13 @@ from dj_segue.time_math import (
     TrackGrid,
     duration_to_seconds,
     echo_window,
+    handoff_swap,
     mix_pos_to_seconds,
     transition_windows,
 )
 
 CURVES = ("equal_power", "linear", "exponential")
-STYLES = ("crossfade", "echo_out")
+STYLES = ("crossfade", "echo_out", "vocal_handoff")
 PARAMS = ("low", "mid", "high", "filter")  # the lanes the page edits per deck
 VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8")
 CONTEXT_BEATS = 16  # shown either side of a transition
@@ -141,6 +143,8 @@ class TuneSession:
             last = max(o.end_sec, n.end_sec)
             if seg.style == "echo_out":
                 last = max(last, echo_window(seg, self.parts.mix_tempo, anchors).end_sec)
+            if seg.style == "vocal_handoff":
+                last = max(last, handoff_swap(seg, self.parts.mix_tempo, anchors))
             ctx = CONTEXT_BEATS * self.spb
             start = max(0, self._smp(min(o.start_sec, n.start_sec) - ctx))
             end = min(self.parts.total_samples, self._smp(last + ctx))
@@ -152,7 +156,7 @@ class TuneSession:
         name = lambda d: self.plan.decks[d].label or f"deck {d}"  # noqa: E731
         seg = self.plan.timeline[it.index]
         start = mix_pos_to_seconds(seg.start_at, self.parts.mix_tempo, self.parts.timeline.anchors)
-        kind = "echo out" if it.style == "echo_out" else "crossfade"
+        kind = {"echo_out": "echo out", "vocal_handoff": "vocal handoff"}.get(it.style, "crossfade")
         return (f"{name(it.from_deck)} → {name(it.to_deck)} · {kind} at mix beat "
                 f"{round(start / self.spb, 1):g} (timeline[{it.index}])")
 
@@ -174,6 +178,8 @@ class TuneSession:
             "in": {"start": n.start_sec, "end": n.end_sec, "curve": _curve_json(n.curve)},
             "lanes": self._lane_state((it.from_deck, it.to_deck)),
         }
+        if seg.style == "vocal_handoff":
+            state["swap"] = handoff_swap(seg, self.parts.mix_tempo, anchors)
         if seg.style == "echo_out":
             w = echo_window(seg, self.parts.mix_tempo, anchors)
             state["echo"] = {
@@ -196,24 +202,41 @@ class TuneSession:
             ],
             "state": state,
             "segment": self.raw["timeline"][index],
+            # Decks mixed by stems → their stems (the page's stem lanes).
+            "stems": {str(d): list(self.parts.stems.get(d, {}))
+                      for d in (it.from_deck, it.to_deck)},
         }
 
     def _lane_index(self, deck: int, param: str) -> int | None:
+        kind, band, stem = _param(param)
         for i, lane in enumerate(self.plan.automation):
-            if param == "filter" and isinstance(lane, FilterLane) and lane.deck == deck:
+            if getattr(lane, "deck", None) != deck:  # the crossfader has no deck
+                continue
+            if kind == "filter" and isinstance(lane, FilterLane):
                 return i
-            if (isinstance(lane, EqLane) and lane.deck == deck and lane.band == param
-                    and lane.stem is None):
+            if kind == "eq" and isinstance(lane, EqLane) and lane.band == band and lane.stem == stem:
+                return i
+            if kind == "vol" and isinstance(lane, StemVolumeLane) and lane.stem == stem:
                 return i
         return None
 
+    def _params(self, deck: int) -> list[str]:
+        """The lanes the page can edit on `deck`: EQ and filter, and on a
+        deck mixed by stems each stem's volume and EQ."""
+        out = list(PARAMS)
+        for stem in self.parts.stems.get(deck, {}):
+            out += [f"{p}@{stem}" for p in ("vol", "low", "mid", "high")]
+        return out
+
     def _lane_state(self, decks) -> dict:
-        """deck → param → [[mix sec, value, keyframe index], …] or None."""
+        """deck → param → [[mix sec, value, keyframe index], …] or None.
+        Params: "low" / "mid" / "high" / "filter", and "vol@<stem>",
+        "low@<stem>" … on decks mixed by stems."""
         anchors = self.parts.timeline.anchors
         out: dict[str, dict] = {}
         for deck in decks:
             out[str(deck)] = {}
-            for param in PARAMS:
+            for param in self._params(deck):
                 i = self._lane_index(deck, param)
                 if i is None:
                     out[str(deck)][param] = None
@@ -222,7 +245,7 @@ class TuneSession:
                 out[str(deck)][param] = [
                     [
                         mix_pos_to_seconds(kf.at, self.parts.mix_tempo, anchors),
-                        kf.value if param == "filter" else kf.value_db,
+                        kf.value_db if _param(param)[0] == "eq" else kf.value,
                         j,
                     ]
                     for j, kf in enumerate(lane.keyframes)
@@ -249,9 +272,21 @@ class TuneSession:
 
     def changes_for(self, index: int, state: dict) -> dict[str, Any]:
         """The transition's keys that `state` changes (DELETE = remove)."""
-        if self.plan.timeline[index].style == "echo_out":
+        style = self.plan.timeline[index].style
+        if style == "echo_out":
             return self._diff(index, self._echo_keys(index, state))
-        return self._diff(index, self._crossfade_keys(index, state))
+        keys = self._crossfade_keys(index, state)
+        if style == "vocal_handoff":
+            # `swap_at` relative to the (possibly moved) start; left out while
+            # it's the default (halfway) and the file has none.
+            o = state["out"]
+            offset = state["swap"] - o["start"]
+            if ("swap_at" in self.raw["timeline"][index]
+                    or abs(offset - (o["end"] - o["start"]) / 2) > EPS):
+                keys["swap_at"] = {"offset": {"beats": _beats(offset, self.spb)}}
+            else:
+                keys["swap_at"] = DELETE
+        return self._diff(index, keys)
 
     def _crossfade_keys(self, index: int, state: dict) -> dict[str, Any]:
         """A crossfade's keys for `state` (DELETE = absent).
@@ -377,18 +412,25 @@ class TuneSession:
         for deck_key, params in (state.get("lanes") or {}).items():
             deck = int(deck_key)
             for param, kfs in params.items():
-                if param not in PARAMS:
+                if param not in self._params(deck):
+                    kind, _, stem = _param(param)
+                    if stem is not None:
+                        raise ValueError(
+                            f"deck {deck} isn't mixed by stems in this session: add a stem "
+                            f"lane to the plan and reopen tune"
+                        )
                     raise ValueError(f"unknown lane {param!r}")
+                kind, band, stem = _param(param)
                 i = self._lane_index(deck, param)
                 if not kfs:
                     if i is not None:
                         raise ValueError(f"deck {deck} {param}: a lane needs a keyframe")
                     continue
-                value_key = "value" if param == "filter" else "value_db"
+                value_key = "value_db" if kind == "eq" else "value"
                 raw_kfs = self.raw["automation"][i]["keyframes"] if i is not None else []
                 out = []
                 for sec, value, j in sorted(kfs, key=lambda k: k[0]):
-                    value = round(float(value), 2 if param == "filter" else 1)
+                    value = round(float(value), 1 if kind == "eq" else 2)
                     if j is not None and i is not None:
                         orig = self.plan.automation[i].keyframes[j]
                         orig_sec = mix_pos_to_seconds(orig.at, self.parts.mix_tempo, anchors)
@@ -398,8 +440,14 @@ class TuneSession:
                         at = self._mix_position(template, sec, anchors)
                     out.append({"at": at, value_key: _num(value)})
                 if i is None:
-                    lane = {"lane": "filter", "deck": deck} if param == "filter" else {
-                        "lane": "eq", "deck": deck, "band": param}
+                    if kind == "filter":
+                        lane = {"lane": "filter", "deck": deck}
+                    elif kind == "vol":
+                        lane = {"lane": "stem_volume", "deck": deck, "stem": stem}
+                    else:
+                        lane = {"lane": "eq", "deck": deck, "band": band}
+                        if stem:
+                            lane["stem"] = stem
                     new_lanes.append({**lane, "keyframes": out})
                 elif out != raw_kfs:
                     edits[i] = out
@@ -417,6 +465,12 @@ class TuneSession:
             (state.get("echo") or {}).get("highpass", 0)
         ) > 0:
             need = "0.7"
+        shaped = index is not None and self.plan.timeline[index].style == "vocal_handoff" and any(
+            v is not DELETE and k in ("swap_at", "curve", "out", "in")
+            for k, v in self.changes_for(index, state).items()
+        )
+        if shaped or any(lane.get("stem") and lane["lane"] == "eq" for lane in new_lanes):
+            need = "0.8"
         if VERSIONS.index(need) > VERSIONS.index(self.raw["schema_version"]):
             return {"schema_version": need}
         return {}
@@ -465,8 +519,21 @@ class TuneSession:
 
         it = self.item(index)
         anchors = resolve_timeline(plan, self.parts.mix_tempo, self.grids).anchors
+        with self._lock:
+            self.engine.ensure_stem_bands(plan, self.parts)
         levels = self.engine.levels(plan, self.parts, anchors)
-        gains = levels.gains
+        gains = dict(levels.gains)
+        vocal_gains = None
+        if it.style == "vocal_handoff":
+            # Draw what the windows shape: the instrumentals' gain (and the
+            # vocals' as a second line).
+            sg = levels.stem_gains
+            vocal_gains = {}
+            for d in (it.from_deck, it.to_deck):
+                inst = next(s for s in sg[d] if s != "vocals")
+                gains[d] = levels.gains[d] * sg[d][inst]
+                vocal_gains[str(d)] = (levels.gains[d] * sg[d]["vocals"])[
+                    it.start : it.end : self.parts.sample_rate // GAIN_RATE].round(4).tolist()
         mixed = self.parts.mix(levels, it.start, it.end)
         buf = io.BytesIO()
         sf.write(buf, mixed, self.parts.sample_rate, format="WAV", subtype="FLOAT")
@@ -492,6 +559,7 @@ class TuneSession:
                 str(d): gains[d][it.start : it.end : step].round(4).tolist() for d in decks
             },
             "gain_rate": self.parts.sample_rate / step,
+            "vocal_gains": vocal_gains,
             # What each deck sounds like after EQ, filter and volume; and the
             # echo tail (drawn over the outgoing deck).
             "peaks": {
@@ -525,6 +593,12 @@ class TuneSession:
                     f"{what} must stay where deck {deck} plays "
                     f"(moving a segment is M4.5 T2)"
                 )
+        if it.style == "vocal_handoff":
+            swap = float(state["swap"])
+            for deck, t in ((it.from_deck, swap), (it.to_deck, swap - VOCAL_SWAP_SEC)):
+                if not any(s.deck == deck and s.mix_start_sec - EPS <= t <= s.mix_end_sec + EPS
+                           for s in self.parts.timeline.spans):
+                    raise ValueError(f"the vocal swap must be where deck {deck} plays")
         if echo is not None and self._smp(float(echo["end"])) > self.parts.total_samples:
             raise ValueError("the echo tail can't run past the end of the mix here")
 
@@ -553,6 +627,18 @@ class TuneSession:
         return {"ok": True, "saved": saved, "segment": self.raw["timeline"][index]}
 
 
+def _param(param: str) -> tuple[str, str | None, str | None]:
+    """A page lane key → (kind, band, stem): "low" → eq low of the deck,
+    "low@drums" → eq low of its drums, "vol@vocals" → stem_volume,
+    "filter" → filter."""
+    name, _, stem = param.partition("@")
+    if name == "filter":
+        return "filter", None, None
+    if name == "vol":
+        return "vol", None, stem
+    return "eq", name, stem or None
+
+
 def _peaks(x: np.ndarray) -> list[float]:
     mono = np.abs(x).max(axis=1)
     edges = np.linspace(0, len(mono), PEAK_BUCKETS + 1).astype(int)
@@ -561,14 +647,18 @@ def _peaks(x: np.ndarray) -> list[float]:
 
 def _lane_lines(raw: dict, edits: dict[int, list], new_lanes: list[dict]) -> list[str]:
     """The lane edits, one line each, for the page."""
+    def what(lane: dict) -> str:
+        name = "volume" if lane["lane"] == "stem_volume" else lane.get("band", lane["lane"])
+        return f"{lane['stem']} {name}" if lane.get("stem") else name
+
     lines = []
     for i, kfs in sorted(edits.items()):
         lane = raw["automation"][i]
-        what = lane.get("band", lane["lane"])
-        lines.append(f"automation[{i}] deck {lane['deck']} {what}: {len(kfs)} keyframes")
+        lines.append(f"automation[{i}] deck {lane['deck']} {what(lane)}: {len(kfs)} keyframes")
     for lane in new_lanes:
-        what = lane.get("band", lane["lane"])
-        lines.append(f"new lane: deck {lane['deck']} {what}, {len(lane['keyframes'])} keyframes")
+        lines.append(
+            f"new lane: deck {lane['deck']} {what(lane)}, {len(lane['keyframes'])} keyframes"
+        )
     return lines
 
 

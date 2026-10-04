@@ -113,23 +113,20 @@ def play(
         "--audio-root",
         help="Base directory for resolving relative audio paths in the plan.",
     ),
+    watch: bool = typer.Option(
+        False,
+        "--watch",
+        help="While playing, apply edits to the plan file (e.g. saves from `tune`) "
+        "a moment ahead of the playhead.",
+    ),
+    from_beat: float = typer.Option(
+        0.0, "--from", help="Start playing at this mix beat.",
+    ),
 ) -> None:
-    """Play a plan live, or render it to a WAV file."""
+    """Play a plan live (it starts as it renders), or render it to a WAV file."""
     plan = _load_or_die(plan_path)
     try:
-        validate_plan(plan)
-    except PlanValidationError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=1)
-
-    pre = run_preprocess(plan, audio_root)
-    durations = {tid: ta.primary.duration_sec for tid, ta in pre.tracks.items()}
-    grids = _grids_or_die(pre)
-    try:
-        # Re-run structural checks with grids: those that need the mix tempo
-        # were skipped above if it defaults to an auto-detected bpm.
-        validate_plan(plan, grids)
-        validate_against_audio(plan, durations, grids)
+        grids = _ready(plan, audio_root)
     except PlanValidationError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1)
@@ -141,9 +138,42 @@ def play(
             f"rendered {render_to} ({result.duration_sec:.3f}s, "
             f"{result.samples.shape[0]} samples @ {result.sample_rate}Hz)"
         )
-    else:
-        result = engine.play_live(plan, audio_root, grids=grids)
-        typer.echo(f"played {result.duration_sec:.3f}s of audio")
+        return
+
+    from dj_segue.executor.native.engine import prepare
+    from dj_segue.executor.native.live import LiveEngine
+    from dj_segue.executor.native.live import play as play_live
+
+    cache: dict = {}  # track audio, kept across reloads
+    p = prepare(plan, audio_root, grids, audio_cache=cache)
+    start = int(round(from_beat * 60.0 / p.mix_tempo * p.sample_rate))
+    live = LiveEngine(p, start=start)
+
+    def rebuild(at: int) -> LiveEngine:
+        new = load_plan(plan_path)
+        new_grids = _ready(new, audio_root)
+        return LiveEngine(prepare(new, audio_root, new_grids, audio_cache=cache), start=at)
+
+    typer.echo(f"playing {plan_path.name}" + (" (watching for edits)" if watch else "")
+               + " — Ctrl-C to stop")
+    frames = play_live(live, watch=plan_path if watch else None, rebuild=rebuild,
+                       log=typer.echo)
+    typer.echo(f"played {frames / p.sample_rate:.3f}s of audio")
+
+
+def _ready(plan, audio_root: Path):
+    """Validate `plan` (raising PlanValidationError), preprocess it and
+    return its grids."""
+    validate_plan(plan)
+    pre = run_preprocess(plan, audio_root)
+    durations = {tid: ta.primary.duration_sec for tid, ta in pre.tracks.items()}
+    grids = _grids_or_die(pre)
+    # Re-run structural checks with grids: those that need the mix tempo
+    # were skipped above if it defaults to an auto-detected bpm.
+    validate_plan(plan, grids)
+    validate_against_audio(plan, durations, grids)
+    separate_stems(plan, audio_root)
+    return grids
 
 
 @app.command()
@@ -184,14 +214,14 @@ def tune(
 ) -> None:
     """Open a plan's transitions in the browser to adjust fade windows and
     curves by ear; Save writes the changes into the plan in place."""
-    from dj_segue.tune import TuneSession, serve
+    from dj_segue.tune import STYLES as TUNE_STYLES, TuneSession, serve
 
     plan = _load_or_die(plan_path)
     if not any(
-        getattr(seg, "type", None) == "transition" and seg.style == "crossfade"
+        getattr(seg, "type", None) == "transition" and seg.style in TUNE_STYLES
         for seg in plan.timeline
     ):
-        typer.echo("no crossfade transitions in this plan", err=True)
+        typer.echo("no crossfade, echo out or vocal handoff in this plan", err=True)
         raise typer.Exit(code=1)
     try:
         session = TuneSession(plan_path, audio_root)

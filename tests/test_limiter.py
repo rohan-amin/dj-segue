@@ -71,7 +71,9 @@ def test_excerpt_equals_full_mix():
     decks = {1: _loud(n, 2), 2: _loud(n, 3)}
     gains = {1: np.linspace(1, 0, n), 2: np.linspace(0, 1, n)}
     parts = DeckRender(decks=decks, sample_rate=SR, total_samples=n, mix_tempo=120.0, timeline=None)
-    levels = Levels(gains)
+    levels = Levels(gains, signals={d: decks[d] * gains[d][:, None].astype(np.float32)
+                                    for d in decks})
+    assert np.abs(parts.mix(levels, limited=False)).max() > 1  # the limiter has work to do
     full = parts.mix(levels)
     before, after = context_samples(SR)
     for start, end in [(0, 300), (1234, 2345), (n - 50, n), (before + 1, n - after - 1)]:

@@ -17,12 +17,13 @@ Schema v0.8. General mixing works: plans with crossfades, cuts, echo outs, vocal
 ## Quick start
 
 ```bash
-brew install rubberband          # time-stretching (Debian/Ubuntu: apt install rubberband-cli)
+brew install rubberband          # time-stretching (Debian/Ubuntu: apt install librubberband-dev)
 pip install -e ".[dev,downbeats,stems]"   # `downbeats` and `stems` are optional (PyTorch)
 
 dj-segue inspect    examples/crossfade_mix.plan.jsonc   # plan summary + validation
 dj-segue preprocess examples/crossfade_mix.plan.jsonc   # analyze tracks (tempo, beat grid)
-dj-segue play       examples/crossfade_mix.plan.jsonc   # play through the speakers
+dj-segue play       examples/crossfade_mix.plan.jsonc   # play through the speakers (starts at once)
+dj-segue play       examples/fancy_likeem.plan.jsonc --watch --from 192   # edits apply while it plays
 dj-segue play       examples/crossfade_mix.plan.jsonc --render-to /tmp/out.wav
 dj-segue scrub      audio/some_track.mp3                # find beat numbers by ear
 dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by ear
@@ -41,23 +42,27 @@ use (beat 0 = first downbeat, bar N = beat 4N). Buttons (and keys) move by beat,
 8 bars or section, loop ½–16 beats, toggle a click on the grid, and mark beats to copy
 into a plan as `{ "beat": N }`.
 
-`dj-segue tune <plan>` opens a plan's crossfades and echo outs in the browser: both
+`dj-segue tune <plan>` opens a plan's crossfades, echo outs and vocal handoffs in the browser: both
 decks' waveforms over the blend (as they sound, after EQ, filter and volume) with their
 volume curves. Drag either side's fade window (snaps to beats; Alt for ¼ beats), pick a
 curve per side or draw your own (**D** for the pencil; drag, add or remove points), and
 play or loop the blend. For an echo out, drag the cut and the tail's end, and set its
 repeat length, feedback and high-pass; drag the incoming deck's handle to turn its hard
 entry into a fade. Two strips under the decks edit their EQ (low / mid / high) and filter
-lanes: click to add a keyframe, drag it, double-click to remove it. What you hear is
+lanes — or, on a deck mixed by stems, one stem's volume and EQ: click to add a keyframe, drag
+it, double-click to remove it. A vocal handoff shows its swap as a marker you can drag. What you hear is
 rendered by the engine itself, so it's exactly what `play` produces.
 **Save** writes only the changed keys and keyframes into the plan (new lanes are appended
 to `automation`), keeping your comments and formatting. (Moving where a track starts and jump/loop points are
 coming; see M4.5 in `docs/milestones.md`.)
 
-Time-stretched audio is cached in the project's `.cache/stretch` folder (git-ignored;
-keyed by the exact input samples, tempo ratio and Rubber Band version), so re-rendering
-or re-opening a plan skips the slow part. Delete that folder any time to free space;
-`DJ_SEGUE_STRETCH_CACHE=off` disables it, or set it to another folder.
+`play` renders as it plays, a fraction of a second ahead of the speakers, so it starts at
+once; `--from BEAT` starts part-way. With `--watch`, saving the plan (by hand or from
+`tune`) applies the change about a third of a second ahead of what you're hearing. Live
+and `--render-to` produce the same samples (played from the top).
+
+Separated stems are cached in the project's `.cache/stems` folder (git-ignored); delete it
+any time to free space.
 
 ---
 

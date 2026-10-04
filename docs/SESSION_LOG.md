@@ -359,3 +359,60 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - The render command is `dj-segue play <plan> --render-to <file.wav>`; there is no `render` subcommand.
 - Bottoms Up is another wrong tempo level (148 vs. the usual 74), like Fancy — beat_this agreed with the double level here, so `pick_tempo_level` didn't help. Watch for hip-hop tracks detected at 2×.
 - Without a declared `bpm`, a too-high detected level would make `target_bpm: "mix"` slow a track down instead of speeding it up — always check the level before beatmatching.
+
+---
+
+## Session: 2026-10-03 → 2026-10-04 (M5 done, M3 stems, tune T7/T8, real-time engine)
+
+**Milestone:** M5 — EQ and filters (done); M3 — Stems (done except the real-music wordplay acceptance); M4.5 T7/T8; R1 — Real-time engine (new, done)
+**Duration:** approximately 75 turns
+**Worked on:** Rendered Bottoms Up; master limiter; echo out; 3-band EQ; filter knob; stems with vocal handoff and per-stem EQ; all of it in the tune page; a block-based real-time engine that matches offline renders bit for bit.
+
+### Roadmap changes (decided with user)
+- M5 before the real-time spike (limiter first, then echo out, then EQ / filter). Then M3 stems, pulling per-stem EQ in from M5.
+- Tempo map deferred to the real-time work, then deferred again to R2 (next session) along with live playback in tune.
+- The wordplay acceptance for M3 (a real word handoff) is on hold: the user wants word timings first (M6).
+- Real-time: user approved that all renders change once (new streaming stretcher) so live == offline.
+
+### Completed
+- **Limiter** (`executor/native/limiter.py`): -1 dBFS lookahead, built from finite windows with integer box sums so tune excerpts stay exact. Renders no longer clip. Finding: time-stretching raises peaks 4–7 dB on these heavily mastered tracks (phase), so the limiter works hard on stretched mixes.
+- **Schema v0.6 echo out**: `echo: {every, feedback}`, optional `in`; the tail is a loop of the last `every` with pre-boundary seams. `examples/fancy_likeem_echo.plan.jsonc` (Like 'em All → Bottoms Up at 76.22 BPM, 3% over native; the user's call) plus a Fancy bass swap (eq lane). User: "that worked".
+- **EQ** (`eq.py`): isolator with LR4 crossovers at 200 Hz / 2.5 kHz (rewritten, not ported; `professional_eq.py`'s shelves were approximations). Fixed filters, automated band gains: no zipper noise. M5 acceptance: a lows kill over 4 beats with the mids intact.
+- **Schema v0.7 filter**: one knob per deck (-1 low-pass … +1 high-pass), numba TPT state-variable filter, exactly dry at 0; `echo.highpass` sweep. numba now listed (already present via librosa).
+- **Tune T7**: echo outs as items, EQ/filter strips, waveforms after effects, item labels. jsonc_edit gained `append_item` and one-keyframe-per-line formatting.
+- **M3 stems / schema v0.8**: path tracks separated automatically (demucs `htdemucs_ft` on MPS, ~40 s per track, cached in `.cache/stems`; "other" absorbs the residual), `stem_volume`, `vocal_handoff` (instrumentals crossfade, vocals swap at `swap_at` with a 10 ms crossover ending on the swap), eq `stem`. `preprocess` separates; `.[stems]` extra.
+- **Tune T8** (uncommitted): vocal handoffs as items (drag the swap marker), stem picker for stem volume / EQ strips. The `tune` CLI now opens plans with only echo outs or handoffs.
+- **R1 real-time engine** (uncommitted): `stretch.py` is now the Rubber Band library via ctypes (streaming, deterministic, independent of read sizes); `sources.py` (deck/stem audio block by block, seams, loops, seek warm-up), `chain.py` (stems → EQ → filter → volume, stateful), `live.py` (LiveEngine with three cursors, ring-buffer Player, `--watch` reload with 20 ms crossfade). `engine.py` rebuilt on these: `render_decks` → `levels` (now full-length per-deck signals) → `mix`. `play` starts at once; `--from BEAT`; `--watch`. Measured: echo mix 18× real time, stems handoff mix 5×. The stretch cache is gone.
+
+### Tests
+- 320 passed, 0 failed (~100 s).
+- New: test_limiter, test_v06_echo, test_m5_eq, test_v07_filter, test_m3_stems, test_stretch (replaces test_stretch_cache), test_live; additions to test_tune.
+- Key guarantees: live == offline bit for bit (random block sizes; through the real ring buffer + callback); tune excerpts == renders; seek: spectra within 1 dB, clicks within 1 ms.
+- Removed: tests that expected EQ / stem_volume / vocal_handoff to be rejected.
+
+### Schema or interface changes
+- Schema v0.6 (echo_out), v0.7 (filter lane, echo.highpass), v0.8 (stems for path tracks, eq `stem`, vocal_handoff `swap_at` + shaping). Docs: `docs/schema-v0.6.md` … `v0.8.md`.
+- Engine: `Levels` holds per-deck `signals`; `prepare()` / `Prepared`; `DeckRender.prepared`. `play` has `--watch` / `--from`.
+
+### Dependencies added/removed
+- Added: `demucs` (optional `.[stems]` extra), `numba` (declared; was transitive). Rubber Band is now used as a library (brew `rubberband` ships it), not the CLI.
+
+### Open questions
+- Tempo map (R2), and live playback in tune.
+- Memory: full-length deck/stem buffers (~0.6 GB for a 7-minute mix with stems); fine for now.
+- `.cache/stretch` deleted (user's call). Without a cache a full offline render of the echo mix takes ~14 s (was <1 s warm) and tune launches wait as long; the user chose to keep it that way for now. A deterministic per-deck cache could come back if it starts to hurt.
+- Example WAVs in `audio/` predate the new stretcher (renders changed once, inaudibly).
+
+### Next session should
+- **R2 — tempo map + live playback in tune** (the agreed follow-up to R1):
+  1. Tempo map: the mix clock can change tempo partway (e.g. Bottoms Up takes over at 74 after the echo out). Schema change (likely `meta.tempo_map` or a per-segment "take the clock"), `time_math` positions through the map, engine and tune follow it. Draft the schema for the user first.
+  2. Tune page plays the whole mix live through the LiveEngine (seek on cursor click; edits applied a moment ahead while it plays), instead of re-rendering an excerpt WAV per edit.
+- After R2: M6 word timing (Whisper word timestamps on the vocals stem, word cues like `{ "word": "up", "nth": 2 }`) to unblock M3's real wordplay acceptance.
+- Not planned unless asked: a `render` subcommand / recording live output (offered; user declined for now), bringing back a stretch cache.
+
+### Notes for future sessions
+- Waveform RMS is the wrong measure for anything that restarts a phase vocoder (seeks, reloads): compare spectra and onset timing.
+- `( cmd & )` from a non-interactive shell ignores SIGINT: test Ctrl-C via `subprocess.Popen` + `send_signal`.
+- Two Chrome browsers are connected; "Browser 2" is on this machine (Browser 1 can't reach localhost).
+- The tune server still reads `page.html` once at startup: restart after page edits.
+- Equality guarantees rely on identical float order: decks summed in sorted order; stems in the track's stem order; sosfilt with zi is bitwise block-invariant (verified).

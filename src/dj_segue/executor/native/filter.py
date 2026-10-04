@@ -10,7 +10,9 @@ p = 0 is exactly the input and crossing the centre doesn't click.
 The filter is a 2-pole (12 dB/oct) topology-preserving-transform state
 variable filter (Zavalishin), with Q = FILTER_Q. Its coefficients are
 recomputed every sample and it stays stable and click-free under that
-modulation. Compiled with numba; one pass per channel.
+modulation. Compiled with numba; one pass per channel. `FilterState` runs
+it block by block, carrying the filter's state, bitwise the same as one
+call over the whole signal.
 """
 
 from __future__ import annotations
@@ -26,27 +28,38 @@ FILTER_Q = 0.9
 FILTER_DEAD_ZONE = 0.05
 
 
+class FilterState:
+    """The filter over consecutive blocks of a stereo signal."""
+
+    def __init__(self, sample_rate: int, channels: int = 2) -> None:
+        self.sr = float(sample_rate)
+        self.state = np.zeros((channels, 2))  # (ic1, ic2) per channel
+
+    def process(self, x: np.ndarray, knob: np.ndarray) -> np.ndarray:
+        out = np.empty(x.shape, dtype=np.float32)
+        knob = np.ascontiguousarray(knob, dtype=np.float64)
+        for ch in range(x.shape[1]):
+            out[:, ch] = _svf(
+                np.ascontiguousarray(x[:, ch], dtype=np.float64), knob, self.sr,
+                FILTER_LP_TOP_HZ, FILTER_LP_BOTTOM_HZ, FILTER_HP_BOTTOM_HZ, FILTER_HP_TOP_HZ,
+                FILTER_Q, FILTER_DEAD_ZONE, self.state[ch],
+            )
+        return out
+
+
 def apply_filter(x: np.ndarray, knob: np.ndarray, sample_rate: int) -> np.ndarray:
     """`x` (n, channels) through the filter, knob position per sample (n,)."""
-    out = np.empty(x.shape, dtype=np.float32)
-    knob = np.ascontiguousarray(knob, dtype=np.float64)
-    for ch in range(x.shape[1]):
-        out[:, ch] = _svf(
-            np.ascontiguousarray(x[:, ch], dtype=np.float64), knob, float(sample_rate),
-            FILTER_LP_TOP_HZ, FILTER_LP_BOTTOM_HZ, FILTER_HP_BOTTOM_HZ, FILTER_HP_TOP_HZ,
-            FILTER_Q, FILTER_DEAD_ZONE,
-        )
-    return out
+    return FilterState(sample_rate, x.shape[1]).process(x, knob)
 
 
 @numba.njit(cache=True)
-def _svf(x, knob, sr, lp_top, lp_bottom, hp_bottom, hp_top, q, dead):  # pragma: no cover
+def _svf(x, knob, sr, lp_top, lp_bottom, hp_bottom, hp_top, q, dead, state):  # pragma: no cover
     n = x.shape[0]
     y = np.empty(n)
     k = 1.0 / q
     max_hz = 0.49 * sr
-    ic1 = 0.0
-    ic2 = 0.0
+    ic1 = state[0]
+    ic2 = state[1]
     for i in range(n):
         p = knob[i]
         if p < 0.0:
@@ -70,4 +83,6 @@ def _svf(x, knob, sr, lp_top, lp_bottom, hp_bottom, hp_top, q, dead):  # pragma:
         wet = v2 if p < 0.0 else x[i] - k * v1 - v2
         mix = min(1.0, abs(p) / dead)
         y[i] = x[i] + mix * (wet - x[i])
+    state[0] = ic1
+    state[1] = ic2
     return y
