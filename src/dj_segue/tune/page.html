@@ -73,8 +73,9 @@
         <button id="pencil" title="Draw a curve (D)">✎ Draw</button>
         <span class="params" id="params"></span>
         <select id="stemPick" aria-label="Lanes for" hidden></select></span>
-      <span class="keys"><kbd>Space</kbd> play/stop · <kbd>Alt</kbd>-drag snaps to ¼ beat · click the ruler to set the cursor<br>
-        <kbd>D</kbd> draw: paint over a fade, <kbd>Shift</kbd> for a straight line · drawn curves: drag points, double-click to add or remove one<br>
+      <span class="keys"><kbd>Space</kbd> play/stop (the whole mix, on this computer's speakers; edits are heard as it plays) · click the ruler to set the cursor, or jump there while playing<br>
+        <kbd>Alt</kbd>-drag snaps to ¼ beat · 
+<kbd>D</kbd> draw: paint over a fade, <kbd>Shift</kbd> for a straight line · drawn curves: drag points, double-click to add or remove one<br>
         lower strips (EQ / filter): click to add a keyframe, drag to move, double-click to remove</span>
     </div>
     <canvas id="view"></canvas>
@@ -128,7 +129,10 @@ const isHandoff = () => item && item.style === "vocal_handoff";
 const EVERY = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
 const isEcho = () => item && item.style === "echo_out";
 let changes = {};
-let audioCtx = null, buffer = null, source = null, playStartCtx = 0, playStartPos = 0, looping = false;
+// Playback is the whole mix, live, through the server's speakers; edits are
+// heard as it plays. `live` = the playhead the server last reported (mix
+// seconds, and when), or null when stopped.
+let live = null, looping = false, polling = false;
 let cursor = 0;           // seconds into the region
 let drag = null, previewSeq = 0;
 let pencil = false;       // draw mode
@@ -272,9 +276,12 @@ function draw() {
   // Cursor and playhead.
   ctx.fillStyle = css("--muted");
   ctx.fillRect(Math.round(xOf(item.start_sec + cursor)), RULER, 1, h - RULER);
-  if (source) {
-    ctx.fillStyle = css("--ink");
-    ctx.fillRect(Math.round(xOf(item.start_sec + position())) - 1, 0, 2, h);
+  if (live) {
+    const t = item.start_sec + position();
+    if (t >= item.start_sec && t <= item.end_sec) {
+      ctx.fillStyle = css("--ink");
+      ctx.fillRect(Math.round(xOf(t)) - 1, 0, 2, h);
+    }
   }
 }
 
@@ -625,7 +632,6 @@ async function loadItem(index) {
   good = structuredClone(state);
   renderStemPick(); renderParams();
   cursor = Math.max(0, plusBeats(blendStart(), -8) - item.start_sec);
-  if (!audioCtx) audioCtx = new AudioContext({ sampleRate: item.sample_rate });
   await requestPreview();
 }
 
@@ -658,12 +664,8 @@ async function requestPreview() {
   }
   $("changes").textContent = lines.length ? lines.join("\n") : "(none)";
   $("save").disabled = keys.length === 0 && laneChanges.length === 0;
-  const data = await (await fetch(`/audio/${res.version}`)).arrayBuffer();
-  if (seq !== previewSeq) return;
-  const decoded = await audioCtx.decodeAudioData(data);
-  const wasPlaying = !!source, at = position();
-  buffer = decoded;
-  if (wasPlaying) play(at);
+  // The server is already playing the edit (if playing); the loop follows the blend.
+  if (looping) sendLoop();
   $("status").textContent = "";
   draw();
 }
@@ -681,44 +683,53 @@ async function save() {
 }
 
 // -- playback ---------------------------------------------------------------
+// Seconds into the region: the playhead (between polls, moving on at real
+// time from the last report), or the cursor when stopped.
 function position() {
-  if (!source) return cursor;
-  let p = playStartPos + (audioCtx.currentTime - playStartCtx);
-  if (looping && source.loop) {
-    const a = source.loopStart, b = source.loopEnd;
-    if (p > b) p = a + ((p - a) % (b - a));
-  }
-  return p;
+  if (!live) return cursor;
+  return live.pos + (performance.now() - live.at) / 1000 - item.start_sec;
 }
+
+async function liveCall(path, body = {}) {
+  const res = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  setLive(await res.json());
+}
+
+function setLive(st) {
+  live = st.playing ? { pos: st.position, at: performance.now() } : null;
+  $("stop").disabled = !live;
+  if (live && !polling) { polling = true; poll(); tick(); }
+  if (!live) { $("pos").textContent = ""; draw(); }
+}
+
+async function poll() {
+  while (live) {
+    await new Promise((r) => setTimeout(r, 100));
+    try { setLive(await (await fetch("/live/state")).json()); } catch { live = null; }
+  }
+  polling = false;
+}
+
+const loopRegion = () => [plusBeats(blendStart(), -4), plusBeats(blendEnd(), 4)];
+const sendLoop = () => liveCall("/live/loop", { region: looping ? loopRegion() : null });
 
 function play(from) {
-  if (!buffer) return;
-  stop(false);
-  audioCtx.resume();
-  source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioCtx.destination);
+  let at = item.start_sec + from;
   if (looping) {
-    source.loop = true;
-    source.loopStart = Math.max(0, plusBeats(blendStart(), -4) - item.start_sec);
-    source.loopEnd = Math.min(buffer.duration, plusBeats(blendEnd(), 4) - item.start_sec);
-    if (from < source.loopStart || from >= source.loopEnd) from = source.loopStart;
+    const [a, b] = loopRegion();
+    if (at < a || at >= b) at = a;
   }
-  source.onended = () => { if (source && !source.loop) { source = null; draw(); } };
-  source.start(0, from);
-  playStartCtx = audioCtx.currentTime; playStartPos = from;
-  tick();
+  $("status").textContent = live ? "" : "starting…";
+  liveCall("/live/play", { at }).then(() => { $("status").textContent = ""; });
 }
 
-function stop(redraw = true) {
-  if (source) { source.onended = null; source.stop(); source = null; }
-  if (redraw) draw();
-}
+const stop = () => liveCall("/live/stop");
 
 function tick() {
-  if (!source) return;
-  const p = position();
-  $("pos").textContent = `beat ${fmtBeat(item.start_sec + p)}`;
+  if (!live) return;
+  $("pos").textContent = `beat ${fmtBeat(item.start_sec + position())}`;
   draw();
   requestAnimationFrame(tick);
 }
@@ -779,7 +790,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   if (y < RULER) {
     cursor = Math.max(0, Math.min(dur(), tOf(x) - item.start_sec));
-    if (source) play(cursor); else draw();
+    if (live) play(cursor); else draw();
     return;
   }
   const s = stripAt(y);
@@ -963,11 +974,11 @@ $("playCursor").onclick = () => play(cursor);
 $("stop").onclick = () => stop();
 $("loop").onclick = () => {
   looping = !looping; $("loop").classList.toggle("on", looping);
-  if (source) play(position());
+  sendLoop();
 };
 $("save").onclick = save;
 $("revert").onclick = () => { state = structuredClone(item.state); requestPreview(); };
-$("pick").onchange = () => { stop(); loadItem(Number($("pick").value)); };
+$("pick").onchange = () => loadItem(Number($("pick").value));
 $("stemPick").onchange = () => { stemSel = $("stemPick").value; renderParams(); draw(); };
 document.addEventListener("keydown", (e) => {
   if (e.code === "KeyD" && !e.metaKey && !e.ctrlKey && e.target.tagName !== "SELECT") {
@@ -976,7 +987,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.code === "Space" && e.target.tagName !== "SELECT") {
     e.preventDefault();
-    source ? stop() : play(cursor);
+    live ? stop() : play(cursor);
   }
 });
 window.addEventListener("resize", draw);
@@ -1000,6 +1011,7 @@ async function waitUntilRendered() {
 (async () => {
   renderParams();
   await waitUntilRendered();
+  setLive(await (await fetch("/live/state")).json());  // already playing (another tab)?
   const info = await (await fetch("/items")).json();
   $("title").textContent = info.plan;
   for (const it of info.items) {

@@ -15,7 +15,9 @@ Three cursors keep the stages in order:
 the sound card; the audio callback only copies out of it (no locks, no
 allocation, no I/O). With `watch`, edits to the plan file are applied while
 playing: a new engine is built for the new plan, starting a little ahead of
-what's already queued, and the switch is a SWITCH_XF_SEC crossfade.
+what's already queued, and the switch is a SWITCH_XF_SEC crossfade. A jump
+(`Player.jump`: a seek, or the tune page's loop going round) is the same
+crossfade into an engine started somewhere else in the mix.
 
 Starting part-way (`start` > 0, a seek or a reload) warms everything up
 from START_WARMUP_SEC earlier, so it sounds right; but only playback from
@@ -192,20 +194,23 @@ class _Ring:
 
 
 class Player:
-    """Plays a LiveEngine; with `reload`, swaps in new plans while playing.
-
-    `reload()` (from a watcher thread) returns a function that builds a
-    LiveEngine starting at a given mix sample, or None to keep going.
+    """Plays a LiveEngine, swapping in others while it plays: a new plan
+    taking over where the old one is (`schedule`), or a jump elsewhere in
+    the mix (`jump`).
     """
 
     def __init__(self, engine: LiveEngine, *, log=print) -> None:
         self.engine = engine
         self.sr = engine.sample_rate
         self.ring = _Ring(int(RING_SEC * self.sr))
-        self.pending = None  # (start sample, LiveEngine) waiting to take over
+        # (mix sample at which to switch, LiveEngine, jump?) waiting to take over
+        self.pending = None
         self.stop = threading.Event()
         self.underruns = 0
         self.log = log
+        # (ring frame, mix sample it holds): where playback started and
+        # each jump landed, to tell what the card is playing.
+        self.marks = [(0, engine.position)]
 
     # -- producer ---------------------------------------------------------------
 
@@ -218,10 +223,10 @@ class Player:
             n = min(BLOCK, self.ring.space())
             pending = self.pending
             if pending is not None:
-                at, new = pending
+                at, new, jump = pending
                 left = at - self.engine.position
                 if left <= 0:
-                    self._switch(new)
+                    self._switch(new, jump)
                     continue
                 n = min(n, left)
             x = self.engine.read(n)
@@ -232,11 +237,13 @@ class Player:
                 continue
             self.ring.write(x)
 
-    def _switch(self, new: LiveEngine) -> None:
+    def _switch(self, new: LiveEngine, jump: bool = False) -> None:
         # Building `new` may have taken longer than the head start it was
         # given: skip it forward to where the old engine is.
-        if new.position < self.engine.position:
+        if not jump and new.position < self.engine.position:
             new.read(self.engine.position - new.position)
+        if jump:
+            self.marks.append((self.ring.w, new.position))
         xf = int(SWITCH_XF_SEC * self.sr)
         old = self.engine.read(xf)
         nxt = new.read(xf)
@@ -245,14 +252,28 @@ class Player:
         self.ring.write(old[:m] * (1 - t) + nxt[:m] * t)
         if len(nxt) > m:
             self.ring.write(nxt[m:])
-        self.engine, self.pending = new, None
+        self.engine = new
+        if self.pending is not None and self.pending[1] is new:
+            self.pending = None  # (another may have been queued meanwhile)
 
     def schedule(self, build) -> int:
         """Build a new engine starting a little past what's queued and hand
         it to the producer. Returns the mix sample it takes over at."""
         at = self.engine.position + int(SWITCH_AHEAD_SEC * self.sr)
-        self.pending = (at, build(at))
+        self.pending = (at, build(at), False)
         return at
+
+    def jump(self, new: LiveEngine, at: int | None = None) -> None:
+        """Crossfade into `new` (started anywhere in the mix) when the
+        current engine reaches mix sample `at` — by default, right away."""
+        self.pending = (self.engine.position if at is None else at, new, True)
+
+    def playing_at(self, latency: int = 0) -> int:
+        """The mix sample the card is playing, `latency` frames after it
+        took it from the ring."""
+        r = max(0, self.ring.r - latency)
+        w, mix = next(m for m in reversed(self.marks) if m[0] <= r)
+        return mix + (r - w)
 
     # -- consumer (the audio callback) -------------------------------------------
 

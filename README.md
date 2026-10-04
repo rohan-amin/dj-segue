@@ -46,12 +46,13 @@ into a plan as `{ "beat": N }`.
 decks' waveforms over the blend (as they sound, after EQ, filter and volume) with their
 volume curves. Drag either side's fade window (snaps to beats; Alt for ¼ beats), pick a
 curve per side or draw your own (**D** for the pencil; drag, add or remove points), and
-play or loop the blend. For an echo out, drag the cut and the tail's end, and set its
+play or loop the blend — the whole mix plays live through this computer's speakers, and
+edits are heard as it plays (click the ruler to jump). For an echo out, drag the cut and the tail's end, and set its
 repeat length, feedback and high-pass; drag the incoming deck's handle to turn its hard
 entry into a fade. Two strips under the decks edit their EQ (low / mid / high) and filter
 lanes — or, on a deck mixed by stems, one stem's volume and EQ: click to add a keyframe, drag
 it, double-click to remove it. A vocal handoff shows its swap as a marker you can drag. What you hear is
-rendered by the engine itself, so it's exactly what `play` produces.
+played by the engine itself, so it's exactly what `play` produces.
 **Save** writes only the changed keys and keyframes into the plan (new lanes are appended
 to `automation`), keeping your comments and formatting. (Moving where a track starts and jump/loop points are
 coming; see M4.5 in `docs/milestones.md`.)
@@ -60,6 +61,10 @@ coming; see M4.5 in `docs/milestones.md`.)
 once; `--from BEAT` starts part-way. With `--watch`, saving the plan (by hand or from
 `tune`) applies the change about a third of a second ahead of what you're hearing. Live
 and `--render-to` produce the same samples (played from the top).
+
+A plan's mix tempo can change partway (schema 0.9 `meta.tempo_map`): a step, or a ramp
+over some beats. Segments at `"target_bpm": "mix"` follow it, staying beatmatched; see
+`examples/fancy_likeem_echo74.plan.jsonc` (an echo out into a track at its own tempo).
 
 Separated stems are cached in the project's `.cache/stems` folder (git-ignored); delete it
 any time to free space.

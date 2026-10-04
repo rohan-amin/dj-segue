@@ -104,6 +104,8 @@ Live playback computes the mix a few hundred ms ahead of the speakers. Every sta
 - `play` runs a producer thread that keeps a lock-free SPSC ring buffer ~0.4 s ahead; the sounddevice callback only copies out of it.
 - Plans can change while playing (`play --watch`): a new engine for the new plan starts ~0.3 s past what's queued (warmed up from 1 s earlier) and takes over with a 20 ms crossfade. Starting part-way (a seek, a reload) sounds right but isn't bit-identical to playing from the top (stretchers and filters restart; spectra match within ~0.5 dB after a beat, beats land within 0.4 ms).
 - Measured: the Fancy → Like 'em All → Bottoms Up mix runs 18× real time; with two decks mixed by stems, 5×.
+- The mix tempo can change (schema v0.9 tempo map, 2026-10-04): a `"mix"` segment across a change is stretched with a varying ratio, set before each piece of input from the rate about the stretcher's start delay back (Rubber Band applies a new ratio to audio it already holds), with pieces ending on tempo steps. Beats: ≤ 1.2 ms after a step, ≤ 0.6 ms through a ramp (44.1 kHz). Still deterministic and read-size independent.
+- The tune page plays through the same engine (R2, 2026-10-04): the server owns the sound device; the page sends play / stop / loop and polls the playhead; each validated edit takes over like a `--watch` reload, and a jump (seek, loop) is the same crossfade into an engine started elsewhere.
 
 ---
 
@@ -190,7 +192,5 @@ Python 3.11+. We use match statements, `typing.Self`, modern type hints througho
 ---
 
 ## Open questions (revisit before locking)
-
-**Live playback in tune (raised 2026-09-30).** The tempo map is settled (schema v0.9, 2026-10-04). What's left is the tune page playing the whole mix live, with edits applied while it plays, in place of an excerpt WAV per edit.
 
 **Memory.** Offline, every deck (and stem) is held full-length; the live engine also keeps full-length mix buffers. Fine for a 10-minute mix; a long set would want rolling buffers.

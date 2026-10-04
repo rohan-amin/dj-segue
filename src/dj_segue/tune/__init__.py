@@ -12,7 +12,13 @@ rewrites only the transition's changed keys (`schema.jsonc_edit`), keeping
 comments and formatting.
 
 The decks render in a background thread after the page opens (it shows
-progress); stretched audio is cached on disk, so a second launch is quick.
+progress).
+
+Playback (R2, tune/live.py) is the whole mix, live, through this machine's
+speakers: the page sends play / stop / loop, and each edit that validates
+is handed to the playing engine, so it's heard within a moment. The
+excerpt each preview mixes is what the page draws from (and what tests
+compare with a render).
 
 Items are crossfades and echo outs. For each, the page also edits the two
 decks' EQ (low / mid / high) and filter lanes over the region: keyframes the
@@ -42,9 +48,11 @@ from pydantic import ValidationError
 
 from dj_segue.compiler import VOCAL_SWAP_SEC, resolve_timeline
 from dj_segue.executor.native import NativeEngine
-from dj_segue.executor.native.engine import DeckRender
+from dj_segue.executor.native.engine import DeckRender, prepare
+from dj_segue.executor.native.live import LiveEngine
 from dj_segue.schema import PlanValidationError, jsonc, validate_against_audio, validate_plan
 from dj_segue.schema.jsonc_edit import DELETE, append_item, edit_object
+from dj_segue.tune.live import TuneLive
 from dj_segue.schema.plan import (
     AfterPos,
     BarPos,
@@ -105,6 +113,8 @@ class TuneSession:
         self.audio: dict[int, bytes] = {}  # preview version → WAV
         self._version = 0
         self._lock = threading.Lock()
+        self.live: TuneLive | None = None  # set by load()
+        self._audio_cache: dict = {}  # track audio for live engines
 
     def load(self) -> None:
         """Render the decks (the slow part: time-stretching, cached on disk)."""
@@ -116,10 +126,15 @@ class TuneSession:
             self.parts = self.engine.render_decks(
                 self.plan, self.audio_root, self.grids, on_progress
             )
+            self.live = TuneLive(self._live_engine, self.plan, self.parts.sample_rate)
             self.progress["ready"] = True
         except Exception as e:  # shown on the page and in the terminal
             self.progress["error"] = str(e)
             raise
+
+    def _live_engine(self, plan: Plan, start: int) -> LiveEngine:
+        p = prepare(plan, self.audio_root, self.grids, audio_cache=self._audio_cache)
+        return LiveEngine(p, start=start)
 
     # -- time ----------------------------------------------------------
 
@@ -540,6 +555,8 @@ class TuneSession:
             issues = e.issues if isinstance(e, PlanValidationError) else [str(e)]
             return {"ok": False, "issues": issues}
 
+        if self.live is not None:
+            self.live.set_plan(plan)  # heard in a moment, if playing
         it = self.item(index)
         anchors = resolve_timeline(plan, self.parts.mix_tempo, self.grids).anchors
         with self._lock:
@@ -647,6 +664,8 @@ class TuneSession:
             self.text = text
             self.raw = jsonc.loads(text)
             self.plan = Plan.model_validate(self.raw)
+            if self.live is not None:
+                self.live.set_plan(self.plan)
         return {"ok": True, "saved": saved, "segment": self.raw["timeline"][index]}
 
 
@@ -748,6 +767,8 @@ def make_server(session: TuneSession, port: int = 0) -> ThreadingHTTPServer:
                     self._json(session.describe(int(path.rsplit("/", 1)[1])))
                 except (ValueError, KeyError):
                     self.send_error(HTTPStatus.NOT_FOUND)
+            elif path == "/live/state":
+                self._json(session.live.state())
             elif path.startswith("/audio/"):
                 body = session.audio.get(int(path.rsplit("/", 1)[1]))
                 if body is None:
@@ -763,7 +784,10 @@ def make_server(session: TuneSession, port: int = 0) -> ThreadingHTTPServer:
                 return
             length = int(self.headers.get("Content-Length", 0))
             try:
-                body = json.loads(self.rfile.read(length))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if self.path.startswith("/live/"):
+                    self._live(body)
+                    return
                 index, state = int(body["index"]), body["state"]
             except (ValueError, KeyError, TypeError):
                 self.send_error(HTTPStatus.BAD_REQUEST)
@@ -774,6 +798,23 @@ def make_server(session: TuneSession, port: int = 0) -> ThreadingHTTPServer:
                 self._json(session.save(index, state))
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
+
+        def _live(self, body: dict) -> None:
+            """/live/play {at: mix sec}, /live/stop, /live/loop {start, end}
+            (mix seconds; null = no loop)."""
+            live, sr = session.live, session.parts.sample_rate
+            if self.path == "/live/play":
+                live.play(int(round(float(body["at"]) * sr)))
+            elif self.path == "/live/stop":
+                live.stop()
+            elif self.path == "/live/loop":
+                region = body.get("region")
+                live.set_loop(None if region is None else
+                              (int(round(float(region[0]) * sr)), int(round(float(region[1]) * sr))))
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            self._json(live.state())
 
         def _json(self, obj: Any) -> None:
             self._send(json.dumps(obj).encode(), "application/json")
@@ -815,4 +856,6 @@ def serve(session: TuneSession, port: int = 0, open_browser: bool = True) -> Non
     except KeyboardInterrupt:
         pass
     finally:
+        if session.live is not None:
+            session.live.stop()
         server.server_close()

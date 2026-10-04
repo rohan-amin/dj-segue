@@ -152,7 +152,7 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 ---
 
-## R2 — Tempo map and live playback in tune  (NEXT, agreed 2026-10-04)
+## R2 — Tempo map and live playback in tune  (DONE 2026-10-04)
 
 **Goal:** The mix clock can change tempo partway through, and the tune page plays the whole mix live.
 
@@ -162,7 +162,9 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 **Acceptance test:** Like 'em All echoes out into Bottoms Up, and the mix clock moves to 74 BPM so Bottoms Up plays at native tempo for the rest of the mix. In tune, dragging a transition while the mix plays is heard within a moment, with no gap.
 
-**Tempo map done 2026-10-04 (schema v0.9):** `meta.tempo_map` with steps and ramps (linear in time); mix beats count through it; `target_bpm: "mix"` segments and loops follow it (Rubber Band with a changing ratio; beats within 1.2 ms after a step, 0.6 ms through a ramp at 44.1 kHz); live == offline still bit for bit; plans without a map render unchanged. Tune counts beats through the map. Acceptance mix: `examples/fancy_likeem_echo74.plan.jsonc` (Bottoms Up unstretched at 74). Still open: live playback in tune.
+**Tempo map done 2026-10-04 (schema v0.9):** `meta.tempo_map` with steps and ramps (linear in time); mix beats count through it; `target_bpm: "mix"` segments and loops follow it (Rubber Band with a changing ratio; beats within 1.2 ms after a step, 0.6 ms through a ramp at 44.1 kHz); live == offline still bit for bit; plans without a map render unchanged. Tune counts beats through the map. Acceptance mix: `examples/fancy_likeem_echo74.plan.jsonc` (Bottoms Up unstretched at 74).
+
+**Live playback in tune done 2026-10-04:** the page plays the whole mix through this machine's speakers (`tune/live.py`): play / stop / jump on a ruler click, loop the blend (a gapless jump back, built ahead), and each validated edit is heard ~0.3 s past what's queued (about half a second after the edit). The per-edit excerpt is still mixed, for drawing and tests.
 
 ---
 
