@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 
-from dj_segue.compiler import resolve_timeline, transition_envelopes
+from dj_segue.compiler import handoff_windows, resolve_timeline, transition_envelopes
 from dj_segue.schema.plan import (
     AfterPos,
     BarPos,
@@ -145,6 +145,8 @@ def _write_timeline(
             start = _fmt_mix_position(seg.start_at, mix_tempo, anchors)
             dur = _fmt_duration(seg.duration)
             shaping = f"  curve={seg.curve}" if seg.curve else ""
+            if seg.swap_at is not None:
+                shaping += f"  swap_at=+{_fmt_duration(seg.swap_at.offset)}"
             if seg.echo is not None:
                 shaping += (
                     f"  echo=(every {_fmt_duration(seg.echo.every)}, "
@@ -206,9 +208,6 @@ def _write_transition_expansion(
         out.write(f"-- transition expansion --\n  (cannot expand: {e})\n\n")
         return
     out.write("-- transition expansion (per-deck gain) --\n")
-    if not envs:
-        out.write("  (none compiled; vocal_handoff is stem-level, M3)\n\n")
-        return
     beats_per_sec = mix_tempo / 60.0
     for deck in sorted(envs):
         env = envs[deck]
@@ -219,6 +218,15 @@ def _write_transition_expansion(
             span = f"beat {b1:g}" if b1 == b2 else f"beat {b1:g} → {b2:g}"
             out.write(
                 f"        {span}: {r.start_value:g} → {r.end_value:g}  ({_fmt_curve(r.shape)})\n"
+            )
+    for i, seg in enumerate(plan.timeline):
+        if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
+            h = handoff_windows(seg, mix_tempo, anchors)
+            b = lambda sec: round(sec * beats_per_sec, 3)  # noqa: E731
+            out.write(
+                f"  timeline[{i}] vocal_handoff: instrumentals out beat {b(h.out.start_sec):g} → "
+                f"{b(h.out.end_sec):g}, in beat {b(h.in_.start_sec):g} → {b(h.in_.end_sec):g}; "
+                f"vocals swap at beat {b(h.swap_sec):g}\n"
             )
     out.write("\n")
 
@@ -236,7 +244,9 @@ def _write_automation(
         elif isinstance(lane, StemVolumeLane):
             head = f"stem_volume   deck {lane.deck} stem={lane.stem}"
         elif isinstance(lane, EqLane):
-            head = f"eq            deck {lane.deck} band={lane.band}"
+            head = f"eq            deck {lane.deck} band={lane.band}" + (
+                f" stem={lane.stem}" if lane.stem else ""
+            )
         elif isinstance(lane, FilterLane):
             head = f"filter        deck {lane.deck}"
         elif isinstance(lane, CrossfaderLane):

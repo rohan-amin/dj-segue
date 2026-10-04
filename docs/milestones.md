@@ -136,6 +136,8 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - `transition` style `"vocal_handoff"`.
 - Stem separation in the preprocessor (demucs).
 
+**Done 2026-10-03 (schema v0.8):** automatic separation of `path` tracks (demucs `htdemucs_ft`, `.[stems]` extra; cached in `.cache/stems`; "other" absorbs the residual so stems sum to the track) instead of hand-made `.npy` files; explicit `stems` still work. `stem_volume` lanes; `vocal_handoff` (instrumentals crossfade, vocals swap at `swap_at` with a 10 ms crossover); per-stem EQ (`eq` lane `stem`, pulled in from M5). Only decks mixed by stems render by stem.
+
 **Acceptance test:** A wordplay-style transition where one track's vocals end on a word and the other track's vocals start on the same word, with drums continuing under the transition.
 
 ---
@@ -145,7 +147,7 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 **Goal:** Frequency-domain DJ moves.
 
 **Scope in:**
-- 3-band EQ per deck and per stem (port `professional_eq.py`). **Per deck done 2026-10-03** (`executor/native/eq.py`; rewritten rather than ported: fixed LR4 crossovers at 200 Hz / 2.5 kHz, automated band gains, so no coefficient updates or zipper noise). Per stem waits for M3.
+- 3-band EQ per deck and per stem (port `professional_eq.py`). **Per deck done 2026-10-03** (`executor/native/eq.py`; rewritten rather than ported: fixed LR4 crossovers at 200 Hz / 2.5 kHz, automated band gains, so no coefficient updates or zipper noise). Per stem: done with M3 (v0.8).
 - Lowpass/highpass filter automation lane. **Done 2026-10-03 (schema v0.7):** `filter` lane (one knob per deck, -1..+1), numba state-variable filter; also `echo.highpass`.
 - Crossfaded coefficient updates (no zipper noise).
 - Master limiter on the mix output, so stretched/summed peaks above 0 dBFS don't hard-clip (decided 2026-09-30; no interim gain cut). **Done 2026-10-03:** `executor/native/limiter.py`, -1 dBFS sample-peak ceiling, ~10 ms lookahead/release, 50 ms hold; built from finite windows so tune excerpts stay byte-identical to renders.

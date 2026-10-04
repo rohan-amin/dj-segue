@@ -35,6 +35,7 @@ from dj_segue.schema.plan import (
     EqLane,
     FilterLane,
     FloatKeyframe,
+    StemVolumeLane,
     LoopSegment,
     PlaySegment,
     Plan,
@@ -48,7 +49,9 @@ from dj_segue.time_math import (
     duration_to_seconds,
     mix_pos_to_seconds,
     track_pos_to_seconds,
+    FadeWindow,
     echo_window,
+    handoff_swap,
     transition_windows,
 )
 
@@ -226,9 +229,12 @@ def resolve_timeline(
     for i, seg in enumerate(plan.timeline):
         if isinstance(seg, TransitionSegment):
             if seg.id is not None:
-                # A transition ends when its later side (or echo tail) does.
+                # A transition ends when its later side (or echo tail, or
+                # vocal swap) does.
                 out_w, in_w = transition_windows(seg, mix_tempo, anchors)
                 end = max(out_w.end_sec, in_w.end_sec)
+                if seg.style == "vocal_handoff":
+                    end = max(end, handoff_swap(seg, mix_tempo, anchors))
                 if seg.style == "echo_out":
                     end = max(end, echo_window(seg, mix_tempo, anchors).end_sec)
                 anchors[seg.id] = end
@@ -322,13 +328,19 @@ def keyframes_to_envelope(
 
 
 def eq_envelope(
-    plan: Plan, deck: int, band: str, mix_tempo: float, anchors: dict[str, float] | None = None
+    plan: Plan,
+    deck: int,
+    band: str,
+    mix_tempo: float,
+    anchors: dict[str, float] | None = None,
+    stem: str | None = None,
 ) -> Envelope | None:
-    """A deck's EQ band gain in dB (0 = flat), or None without a lane for it.
-    `linear` interpolation is linear in dB. One lane per deck and band
-    (validator)."""
+    """A deck's (or one of its stems', v0.8) EQ band gain in dB (0 = flat),
+    or None without a lane for it. `linear` interpolation is linear in dB.
+    One lane per deck, band and stem (validator)."""
     for i, lane in enumerate(plan.automation):
-        if isinstance(lane, EqLane) and lane.deck == deck and lane.band == band:
+        if (isinstance(lane, EqLane) and lane.deck == deck and lane.band == band
+                and lane.stem == stem):
             return keyframes_to_envelope(
                 [FloatKeyframe(at=kf.at, value=kf.value_db) for kf in lane.keyframes],
                 lane.interpolation,
@@ -359,7 +371,14 @@ def filter_decks(plan: Plan) -> set[int]:
 
 
 def eq_decks(plan: Plan) -> set[int]:
-    return {lane.deck for lane in plan.automation if isinstance(lane, EqLane)}
+    """Decks with whole-deck EQ."""
+    return {lane.deck for lane in plan.automation if isinstance(lane, EqLane) and not lane.stem}
+
+
+def eq_stems(plan: Plan) -> set[tuple[int, str]]:
+    """(deck, stem) pairs with their own EQ (v0.8)."""
+    return {(lane.deck, lane.stem) for lane in plan.automation
+            if isinstance(lane, EqLane) and lane.stem}
 
 
 def deck_volume_envelopes(
@@ -422,23 +441,106 @@ def _shape(curve) -> Shape:
     return Points(tuple((float(t), float(g)) for t, g in curve.points), curve.smooth)
 
 
+# A vocal_handoff's vocals cross over this long, ending on the swap (so the
+# incoming vocal's first word is untouched), like a loop seam.
+VOCAL_SWAP_SEC = 0.010
+
+
+@dataclass(frozen=True)
+class Handoff:
+    """A vocal_handoff in mix seconds: the instrumentals' fades, the vocal
+    swap, and the span it all covers."""
+
+    out: FadeWindow
+    in_: FadeWindow
+    swap_sec: float
+    start_sec: float
+    end_sec: float
+
+
+def handoff_windows(
+    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> Handoff:
+    out_w, in_w = transition_windows(seg, mix_tempo, anchors)
+    swap = handoff_swap(seg, mix_tempo, anchors)
+    return Handoff(
+        out_w, in_w, swap,
+        min(in_w.start_sec, out_w.start_sec, swap - VOCAL_SWAP_SEC),
+        max(out_w.end_sec, in_w.end_sec, swap),
+    )
+
+
+def stem_decks(plan: Plan) -> set[int]:
+    from dj_segue.schema.validator import stem_decks as _stem_decks
+
+    return _stem_decks(plan)
+
+
+def stem_envelopes(
+    plan: Plan, deck: int, stem: str, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> list[Envelope]:
+    """Gain envelopes for one stem of a deck (multiplied together): its
+    stem_volume lanes, and each vocal_handoff on the deck.
+
+    In a handoff the outgoing deck's instrumental stems fade over `out`
+    and its vocals stop at the swap; the incoming deck's instrumentals fade
+    in over `in` and its vocals start at the swap. Outside a handoff's span
+    its envelopes are 1 (the deck-level gain switches the deck on and off).
+    """
+    envs = [
+        keyframes_to_envelope(
+            lane.keyframes, lane.interpolation, mix_tempo,
+            f"automation[{i}] stem_volume {stem}", anchors=anchors,
+        )
+        for i, lane in enumerate(plan.automation)
+        if isinstance(lane, StemVolumeLane) and lane.deck == deck and lane.stem == stem
+    ]
+    for i, seg in enumerate(plan.timeline):
+        if not (isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff"):
+            continue
+        if deck not in (seg.from_deck, seg.to_deck):
+            continue
+        h = handoff_windows(seg, mix_tempo, anchors)
+        vocal_lo = h.swap_sec - VOCAL_SWAP_SEC
+        if deck == seg.from_deck:
+            fade = (Ramp(vocal_lo, h.swap_sec, 1.0, 0.0, "linear") if stem == "vocals" else
+                    Ramp(h.out.start_sec, h.out.end_sec, 1.0, 0.0, _shape(h.out.curve)))
+            ramps = (fade, Ramp(h.end_sec, h.end_sec, 0.0, 1.0, "step"))
+        else:
+            fade = (Ramp(vocal_lo, h.swap_sec, 0.0, 1.0, "linear") if stem == "vocals" else
+                    Ramp(h.in_.start_sec, h.in_.end_sec, 0.0, 1.0, _shape(h.in_.curve)))
+            ramps = (Ramp(h.start_sec, h.start_sec, 1.0, 0.0, "step"), fade)
+        envs.append(Envelope(1.0, ramps, f"timeline[{i}] vocal_handoff {stem}"))
+    return envs
+
+
 def transition_envelopes(
     plan: Plan, mix_tempo: float, anchors: dict[str, float] | None = None
 ) -> dict[int, Envelope]:
-    """Expand every crossfade/cut transition into per-deck gain envelopes.
+    """Expand every transition into per-deck gain envelopes.
 
     `anchors` (Timeline.anchors) is needed when a transition starts at an
     `after` position.
 
-    `vocal_handoff` is stem-level (M3) and is not compiled here; executors that
-    can't handle it must reject the plan before rendering.
+    A vocal_handoff (v0.8) shapes its decks by stem (`stem_envelopes`); at
+    deck level the incoming deck just switches on where the handoff begins
+    and the outgoing one off where it ends.
     """
     per_deck: dict[int, list[tuple[Ramp, str]]] = {}
     for i, seg in enumerate(plan.timeline):
-        if not isinstance(seg, TransitionSegment) or seg.style == "vocal_handoff":
+        if not isinstance(seg, TransitionSegment):
+            continue
+        label = f"timeline[{i}] {seg.style}"
+        if seg.style == "vocal_handoff":
+            h = handoff_windows(seg, mix_tempo, anchors)
+            per_deck.setdefault(seg.from_deck, []).append(
+                (Ramp(h.end_sec, h.end_sec, 1.0, 0.0, "step"), label)
+            )
+            per_deck.setdefault(seg.to_deck, []).append(
+                (Ramp(h.start_sec, h.start_sec, 0.0, 1.0, "step"), label)
+            )
             continue
         out_w, in_w = transition_windows(seg, mix_tempo, anchors)
-        label = f"timeline[{i}] {seg.style}"
         per_deck.setdefault(seg.from_deck, []).append(
             (Ramp(out_w.start_sec, out_w.end_sec, 1.0, 0.0, _shape(out_w.curve)), label)
         )

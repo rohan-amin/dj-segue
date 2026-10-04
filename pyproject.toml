@@ -24,6 +24,11 @@ dependencies = [
 downbeats = [
     "beat_this>=1.1",
 ]
+# Stem separation (M3): vocals / drums / bass / other. Uses the PyTorch that
+# beat_this pulls in; the model weights (~300 MB) download on first use.
+stems = [
+    "demucs>=4.0",
+]
 dev = [
     "pytest>=8.0",
 ]

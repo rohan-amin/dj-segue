@@ -3,6 +3,9 @@ from dj_segue.preprocessor.pipeline import (
     TempoNotDetectedError,
     TrackAnalysis,
     preprocess,
+    separate_stems,
 )
 
-__all__ = ["PreprocessResult", "TempoNotDetectedError", "TrackAnalysis", "preprocess"]
+__all__ = [
+    "PreprocessResult", "TempoNotDetectedError", "TrackAnalysis", "preprocess", "separate_stems",
+]

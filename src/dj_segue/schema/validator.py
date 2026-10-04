@@ -33,6 +33,7 @@ from dj_segue.schema.plan import (
     SilenceSegment,
     StemVolumeLane,
     TransitionSegment,
+    available_stems,
 )
 from dj_segue.constants import ANCHOR_TOLERANCE
 
@@ -288,28 +289,57 @@ def _check_loop_schedules(plan: Plan) -> list[str]:
 
 def _check_stem_references(plan: Plan) -> list[str]:
     """
-    For each stem_volume lane on deck D, every track that plays on D anywhere
-    in the timeline must declare the named stem.
+    Every stem a lane names (stem_volume, or eq with `stem`) on deck D must
+    be available on every track that plays on D: the track's own `stems`, or
+    for a `path` track the four the separator makes (v0.8). And every track
+    on a deck that's mixed by stems offers the same stems.
     """
     issues: list[str] = []
-    tracks_per_deck: dict[int, set[str]] = {}
-    for seg in plan.timeline:
-        if isinstance(seg, (PlaySegment, LoopSegment)):
-            tracks_per_deck.setdefault(seg.deck, set()).add(seg.track)
-
+    tracks_per_deck = _tracks_per_deck(plan)
     for i, lane in enumerate(plan.automation):
-        if not isinstance(lane, StemVolumeLane):
+        stem = lane.stem if isinstance(lane, (StemVolumeLane, EqLane)) else None
+        if stem is None:
             continue
-        for track_id in tracks_per_deck.get(lane.deck, set()):
+        for track_id in sorted(tracks_per_deck.get(lane.deck, set())):
             track = plan.tracks.get(track_id)
-            if track is None or lane.stem in track.stems:
+            if track is None or stem in available_stems(track):
                 continue
             issues.append(
-                f"automation[{i}] (stem_volume on deck {lane.deck}): "
-                f"track {track_id!r} has no stem {lane.stem!r}; "
-                f"available: {sorted(track.stems)}"
+                f"automation[{i}] ({lane.lane} on deck {lane.deck}): "
+                f"track {track_id!r} has no stem {stem!r}; "
+                f"available: {sorted(available_stems(track))}"
+            )
+    for deck in sorted(stem_decks(plan)):
+        sets = {
+            tid: available_stems(plan.tracks[tid])
+            for tid in tracks_per_deck.get(deck, set()) if tid in plan.tracks
+        }
+        if len({tuple(sorted(v)) for v in sets.values()}) > 1:
+            issues.append(
+                f"deck {deck} is mixed by stems, but its tracks have different stems: "
+                + ", ".join(f"{t}: {sorted(v)}" for t, v in sorted(sets.items()))
             )
     return issues
+
+
+def _tracks_per_deck(plan: Plan) -> dict[int, set[str]]:
+    out: dict[int, set[str]] = {}
+    for seg in plan.timeline:
+        if isinstance(seg, (PlaySegment, LoopSegment)):
+            out.setdefault(seg.deck, set()).add(seg.track)
+    return out
+
+
+def stem_decks(plan: Plan) -> set[int]:
+    """Decks mixed by stems: a stem lane, or either side of a vocal_handoff."""
+    decks = {
+        lane.deck for lane in plan.automation
+        if isinstance(lane, StemVolumeLane) or (isinstance(lane, EqLane) and lane.stem)
+    }
+    for seg in plan.timeline:
+        if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
+            decks |= {seg.from_deck, seg.to_deck}
+    return decks
 
 
 def _check_keyframe_ordering(
@@ -467,8 +497,7 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
     """
     For each vocal_handoff transition, every track that plays on either the
     from_deck or the to_deck (anywhere in the timeline) must have a 'vocals'
-    stem. Conservative — the executor narrows this to just the tracks
-    overlapping the transition window.
+    stem — any `path` track does (v0.8: separated automatically).
     """
     issues: list[str] = []
     decks_needing_vocals: set[int] = set()
@@ -476,15 +505,13 @@ def _check_vocal_handoff_requirements(plan: Plan) -> list[str]:
         if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
             decks_needing_vocals.add(seg.from_deck)
             decks_needing_vocals.add(seg.to_deck)
-    if not decks_needing_vocals:
-        return issues
     for i, seg in enumerate(plan.timeline):
         if not isinstance(seg, (PlaySegment, LoopSegment)):
             continue
         if seg.deck not in decks_needing_vocals:
             continue
         track = plan.tracks.get(seg.track)
-        if track is None or "vocals" in track.stems:
+        if track is None or "vocals" in available_stems(track):
             continue
         issues.append(
             f"timeline[{i}] ({seg.type} on deck {seg.deck}): track {seg.track!r} "
@@ -534,6 +561,11 @@ def _check_transitions(
             issues.append(
                 f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'
             )
+        if seg.style == "vocal_handoff":
+            swap = time_math.handoff_swap(seg, mix_tempo, anchors)
+            start = time_math.mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+            if not start - 1e-9 <= swap <= start + duration + 1e-9:
+                issues.append(f"{label}: swap_at must be within the transition's duration")
         if seg.style == "echo_out":
             every = time_math.duration_to_seconds(seg.echo.every, mix_tempo)
             if duration <= 0:
@@ -587,17 +619,19 @@ EQ_MIN_DB, EQ_MAX_DB = -24.0, 12.0
 
 
 def _check_eq_lanes(plan: Plan) -> list[str]:
-    """EQ values within EQ_MIN_DB..EQ_MAX_DB; one lane per deck and band."""
+    """EQ values within EQ_MIN_DB..EQ_MAX_DB; one lane per deck, band and
+    stem (v0.8; no stem = the whole deck)."""
     issues: list[str] = []
-    seen: dict[tuple[int, str], int] = {}
+    seen: dict[tuple[int, str, str | None], int] = {}
     for i, lane in enumerate(plan.automation):
         if not isinstance(lane, EqLane):
             continue
-        key = (lane.deck, lane.band)
+        key = (lane.deck, lane.band, lane.stem)
         if key in seen:
+            what = f" stem {lane.stem!r}" if lane.stem else ""
             issues.append(
                 f"automation[{i}]: a second eq lane for deck {lane.deck} band "
-                f"{lane.band!r} (first is automation[{seen[key]}])"
+                f"{lane.band!r}{what} (first is automation[{seen[key]}])"
             )
         seen.setdefault(key, i)
         for j, kf in enumerate(lane.keyframes):

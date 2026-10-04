@@ -1,13 +1,17 @@
 """Native audio engine — offline WAV render and live sounddevice playback.
 
-Supported: `play`/`loop`/`silence` segments, `crossfade`/`cut`/`echo_out`
-transitions, and `deck_volume`/`crossfader`/`eq` automation. Anything else in
-a plan (stem_volume, vocal_handoff, stem-based tracks) raises
-NotImplementedError naming the milestone that adds it — the engine never
-silently ignores part of a plan.
+Supports every segment, transition and automation lane in schema v0.8.
 
 EQ (eq.py): a deck with `eq` lanes is split once into three bands; the lanes
 scale the bands per sample.
+
+Stems (M3): a deck with a stem lane or a vocal_handoff is mixed by stems.
+Each segment is rendered per stem (a `path` track's stems come from the
+separator, dj_segue.stems; explicit `stems` are loaded — a `.npy` stem is
+taken as 44.1 kHz). Per sample, each stem gets its own EQ and volume
+(stem_volume lanes × vocal_handoff fades), then the stems are summed and
+the deck carries on as any other: its EQ, filter and volume. Decks not
+mixed by stems play the track as before.
 
 Single sample rate (mismatched tracks error out). A play segment with
 `target_bpm` is time-stretched (pitch preserved) by target / track tempo;
@@ -46,7 +50,7 @@ import os
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +64,9 @@ from dj_segue.compiler import (
     deck_volume_envelopes,
     eq_decks,
     eq_envelope,
+    eq_stems,
+    stem_decks,
+    stem_envelopes,
     filter_decks,
     filter_envelope,
     resolve_timeline,
@@ -73,8 +80,9 @@ from dj_segue.executor.native.limiter import context_samples as limiter_context
 from dj_segue.executor.native.limiter import limit
 from dj_segue.executor.native.stretch import time_stretch
 from dj_segue.schema.plan import (
+    LoopSegment,
     Plan,
-    StemVolumeLane,
+    PlaySegment,
     TransitionSegment,
 )
 from dj_segue.schema.validator import resolved_mix_tempo
@@ -108,6 +116,11 @@ class Levels:
     # filter has memory, so it runs over the full deck, not per excerpt).
     filtered: dict[int, np.ndarray] = field(default_factory=dict)
     tails: tuple[Tail, ...] = ()
+    # Decks mixed by stems: the stems mixed (after their EQ and volume), the
+    # whole deck's audio before its own EQ — its band sum if it has EQ, with
+    # (low, high) in `premix_bands`.
+    premix: dict[int, np.ndarray] = field(default_factory=dict)
+    premix_bands: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -122,14 +135,22 @@ class DeckRender:
     # Decks with EQ: their `decks` entry is the band sum; these are the
     # (low, high) bands (eq.split_bands).
     bands: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    # Decks mixed by stems (M3): each stem's audio, on the mix clock. A stem
+    # with its own EQ holds its band sum, with (low, high) in `stem_bands`.
+    stems: dict[int, dict[str, np.ndarray]] = field(default_factory=dict)
+    stem_bands: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]] = field(
+        default_factory=dict
+    )
 
-    def equalized(self, deck: int, eq: EqGains, lo: int, hi: int) -> np.ndarray:
-        """`deck`'s audio over [lo, hi) (inside the mix) after its EQ."""
-        x = self.decks[deck][lo:hi]
-        if deck in eq:
-            g_low, g_mid, g_high = (g[lo:hi, None] for g in eq[deck])
-            low, high = (b[lo:hi] for b in self.bands[deck])
-            x = x * g_mid + low * (g_low - g_mid) + high * (g_high - g_mid)
+    def equalized(self, deck: int, levels: Levels, lo: int, hi: int) -> np.ndarray:
+        """`deck`'s audio over [lo, hi) (inside the mix) after its stems'
+        mix and its EQ."""
+        if deck in levels.premix:
+            x, bands = levels.premix[deck][lo:hi], levels.premix_bands.get(deck)
+        else:
+            x, bands = self.decks[deck][lo:hi], self.bands.get(deck)
+        if deck in levels.eq:
+            x = _apply_eq(x, levels.eq[deck], bands, lo, hi)
         return x
 
     def signal(self, deck: int, levels: Levels, start: int, end: int) -> np.ndarray:
@@ -142,7 +163,7 @@ class DeckRender:
         if deck in levels.filtered:
             x = levels.filtered[deck][lo:hi]
         else:
-            x = self.equalized(deck, levels.eq, lo, hi)
+            x = self.equalized(deck, levels, lo, hi)
         out[lo - start : hi - start] = x * levels.gains[deck][lo:hi, None]
         return out
 
@@ -226,9 +247,10 @@ class NativeEngine(MixExecutor):
         `render` = `render_decks` → `levels` → `DeckRender.mix`; the tune
         page uses the same steps so it plays exactly what `render` produces.
         """
-        self._check_supported(plan)
         audio_root = Path(audio_root).resolve()
         track_audio, sample_rate = self._load_all_tracks(plan, audio_root)
+        by_stems = stem_decks(plan)
+        track_stems = self._load_stems(plan, audio_root, track_audio, sample_rate, by_stems)
         mix_tempo = resolved_mix_tempo(plan, grids)
         if mix_tempo is None:
             raise ValueError(
@@ -258,31 +280,40 @@ class NativeEngine(MixExecutor):
                 lead = min(seam, n, prev.mix_end_sample - prev.mix_start_sample)
             leads.append(lead)
 
+        # One job per segment — per stem on a deck mixed by stems (each stem
+        # is stretched on its own, with the same seams).
+        jobs = []
+        for c, lead in zip(ordered, leads):
+            if c.deck in by_stems:
+                jobs += [(c, lead, stem) for stem in track_stems[c.track_id]]
+            else:
+                jobs.append((c, lead, None))
+
         done = 0
         if on_progress is not None:
-            on_progress(0, len(ordered))
+            on_progress(0, len(jobs))
 
-        def segment(job: tuple[_CompiledPlay, int]) -> np.ndarray:
+        def segment(job: tuple[_CompiledPlay, int, str | None]) -> np.ndarray:
             nonlocal done
-            c, lead = job
+            c, lead, stem = job
+            src = track_audio[c.track_id] if stem is None else track_stems[c.track_id][stem]
             audio = self._segment_audio(
-                track_audio[c.track_id], c, c.mix_end_sample - c.mix_start_sample,
-                sample_rate, lead,
+                src, c, c.mix_end_sample - c.mix_start_sample, sample_rate, lead,
             )
             if on_progress is not None:
                 with progress_lock:
                     done += 1
-                    on_progress(done, len(ordered))
+                    on_progress(done, len(jobs))
             return audio
 
         progress_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=max(1, os.cpu_count() or 1)) as pool:
-            audios = list(pool.map(segment, zip(ordered, leads)))
+            audios = list(pool.map(segment, jobs))
 
-        deck_buffers: dict[int, np.ndarray] = {}
-        for c, lead, audio in zip(ordered, leads, audios):
-            buf = deck_buffers.setdefault(
-                c.deck, np.zeros((total_samples, 2), dtype=np.float32)
+        buffers: dict[tuple[int, str | None], np.ndarray] = {}
+        for (c, lead, stem), audio in zip(jobs, audios):
+            buf = buffers.setdefault(
+                (c.deck, stem), np.zeros((total_samples, 2), dtype=np.float32)
             )
             if lead:
                 buf[c.mix_start_sample - lead : c.mix_start_sample] *= _ramp(
@@ -290,12 +321,31 @@ class NativeEngine(MixExecutor):
                 )[:, None]
             buf[c.mix_start_sample - lead : c.mix_end_sample] += audio
 
+        deck_buffers = {d: b for (d, stem), b in buffers.items() if stem is None}
+        stems: dict[int, dict[str, np.ndarray]] = {}
+        for (d, stem), b in buffers.items():
+            if stem is not None:
+                stems.setdefault(d, {})[stem] = b
+        for d, per_stem in stems.items():
+            deck_buffers[d] = sum(per_stem.values())  # display; levels mixes the stems
+        stem_bands: dict[tuple[int, str], tuple[np.ndarray, np.ndarray]] = {}
+        for d, stem in sorted(eq_stems(plan)):
+            if stem in stems.get(d, {}):
+                total, low, high = split_bands(stems[d][stem], sample_rate)
+                stems[d][stem] = total
+                stem_bands[(d, stem)] = (low, high)
+
+        # Whole-deck EQ bands now for plain decks; a deck mixed by stems is
+        # split in `levels`, after its stems are mixed.
         bands: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-        for deck in sorted(eq_decks(plan) & set(deck_buffers)):
+        for deck in sorted(eq_decks(plan) & set(deck_buffers) - set(stems)):
             total, low, high = split_bands(deck_buffers[deck], sample_rate)
             deck_buffers[deck] = total
             bands[deck] = (low, high)
-        return DeckRender(deck_buffers, sample_rate, total_samples, mix_tempo, timeline, bands)
+        return DeckRender(
+            deck_buffers, sample_rate, total_samples, mix_tempo, timeline, bands,
+            stems, stem_bands,
+        )
 
     def deck_gains(
         self, plan: Plan, parts: "DeckRender", anchors: dict[str, float] | None = None
@@ -317,18 +367,8 @@ class NativeEngine(MixExecutor):
         """Per-sample (low, mid, high) gains for each deck `parts` split into
         bands. A band without a lane stays at 0 dB."""
         anchors = parts.timeline.anchors if anchors is None else anchors
-        out: EqGains = {}
-        for deck in parts.bands:
-            per_band = []
-            for band in ("low", "mid", "high"):
-                env = eq_envelope(plan, deck, band, parts.mix_tempo, anchors)
-                if env is None:
-                    per_band.append(np.ones(parts.total_samples, dtype=np.float32))
-                else:
-                    db = render_envelope(env, parts.sample_rate, parts.total_samples)
-                    per_band.append((10.0 ** (db / 20.0)).astype(np.float32))
-            out[deck] = tuple(per_band)
-        return out
+        decks = set(parts.bands) | (eq_decks(plan) & set(parts.stems))
+        return {deck: _eq_gains(plan, deck, parts, anchors) for deck in sorted(decks)}
 
     def render_to_wav(
         self,
@@ -362,66 +402,99 @@ class NativeEngine(MixExecutor):
         """Volume, EQ, filter and echo tails under `plan` (`anchors` default
         to `parts`' own). `render` = `render_decks` → `levels` → `mix`."""
         anchors = parts.timeline.anchors if anchors is None else anchors
+        sr, n = parts.sample_rate, parts.total_samples
         gains = self.deck_gains(plan, parts, anchors)
         eq = self.deck_eq(plan, parts, anchors)
+
+        premix: dict[int, np.ndarray] = {}
+        premix_bands: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        for deck, per_stem in sorted(parts.stems.items()):
+            x = np.zeros((n, 2), dtype=np.float32)
+            for stem, audio in per_stem.items():
+                if (deck, stem) in parts.stem_bands:
+                    audio = _apply_eq(
+                        audio, _eq_gains(plan, deck, parts, anchors, stem),
+                        parts.stem_bands[(deck, stem)], 0, n,
+                    )
+                g = np.ones(n, dtype=np.float32)
+                for env in stem_envelopes(plan, deck, stem, parts.mix_tempo, anchors):
+                    g *= render_envelope(env, sr, n)
+                x += audio * g[:, None]
+            if deck in eq:
+                total, low, high = split_bands(x, sr)
+                premix[deck], premix_bands[deck] = total, (low, high)
+            else:
+                premix[deck] = x
+
+        levels = Levels(gains, eq, premix=premix, premix_bands=premix_bands)
         filtered = {}
         for deck in sorted(filter_decks(plan) & set(parts.decks)):
             env = filter_envelope(plan, deck, parts.mix_tempo, anchors)
-            knob = render_envelope(env, parts.sample_rate, parts.total_samples)
-            x = parts.equalized(deck, eq, 0, parts.total_samples)
-            filtered[deck] = apply_filter(x, knob, parts.sample_rate)
-        levels = Levels(gains, eq, filtered)
+            knob = render_envelope(env, sr, n)
+            filtered[deck] = apply_filter(parts.equalized(deck, levels, 0, n), knob, sr)
+        levels = replace(levels, filtered=filtered)
         tails = tuple(
             _echo_tail(parts, deck, levels, w)
             for deck, w in _echo_windows(plan, parts.mix_tempo, anchors, with_deck=True)
             if deck in parts.decks
         )
-        return Levels(gains, eq, filtered, tails)
+        return replace(levels, tails=tails)
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _check_supported(plan: Plan) -> None:
-        for i, seg in enumerate(plan.timeline):
-            if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff":
-                raise NotImplementedError(
-                    f"timeline[{i}]: vocal_handoff transitions are M3 scope (stems); "
-                    f"the native engine supports crossfade, cut and echo_out"
-                )
-        for i, lane in enumerate(plan.automation):
-            if isinstance(lane, StemVolumeLane):
-                raise NotImplementedError(
-                    f"automation[{i}]: stem_volume lanes are M3 scope (stems)"
-                )
-
     def _load_all_tracks(
         self, plan: Plan, audio_root: Path
     ) -> tuple[dict[str, np.ndarray], int]:
+        """Each track's audio (frames × 2): its file, or the sum of its
+        explicit stems."""
+        self._explicit_stems: dict[str, dict[str, np.ndarray]] = {}
         loaded: dict[str, np.ndarray] = {}
         rates: set[int] = set()
         for tid, track in plan.tracks.items():
-            # M1: only single-source (`full`) tracks are supported.
-            if list(track.stems) != ["full"]:
-                raise NotImplementedError(
-                    f"track {tid!r}: stem-based tracks are M3 scope; "
-                    f"v0.1 native engine supports single-source only"
-                )
-            audio_path = (audio_root / track.stems["full"]).resolve()
-            data, sr = sf.read(str(audio_path), dtype="float32", always_2d=True)
-            if data.shape[1] == 1:
-                data = np.repeat(data, 2, axis=1)  # mono → stereo
-            elif data.shape[1] > 2:
-                data = data[:, :2]
-            loaded[tid] = data
-            rates.add(int(sr))
+            parts = {}
+            for name, rel in track.stems.items():
+                data, sr = _read_audio((audio_root / rel).resolve())
+                parts[name] = data
+                rates.add(sr)
+            if list(parts) == ["full"]:
+                loaded[tid] = parts["full"]
+            else:
+                n = max(len(x) for x in parts.values())
+                parts = {k: _fit_length(x, n) for k, x in parts.items()}
+                self._explicit_stems[tid] = parts
+                loaded[tid] = sum(parts.values())
         if len(rates) > 1:
             raise NotImplementedError(
                 f"mixed sample rates {sorted(rates)} not supported in M1; "
                 f"resample tracks to a common rate (e.g. 44100) first"
             )
         return loaded, rates.pop()
+
+    def _load_stems(
+        self,
+        plan: Plan,
+        audio_root: Path,
+        track_audio: dict[str, np.ndarray],
+        sample_rate: int,
+        decks: set[int],
+    ) -> dict[str, dict[str, np.ndarray]]:
+        """Stems of every track played on a deck mixed by stems: its own, or
+        separated (cached; the preprocessor normally did it already)."""
+        tids = sorted({
+            seg.track for seg in plan.timeline
+            if isinstance(seg, (PlaySegment, LoopSegment)) and seg.deck in decks
+        })
+        out = {}
+        for tid in tids:
+            if tid in self._explicit_stems:
+                out[tid] = self._explicit_stems[tid]
+            else:
+                from dj_segue.stems import stems_for
+
+                out[tid] = stems_for(track_audio[tid], sample_rate)
+        return out
 
     @staticmethod
     def _compile_play_segments(spans: list[Span], sample_rate: int) -> list[_CompiledPlay]:
@@ -543,6 +616,29 @@ class NativeEngine(MixExecutor):
         return gains
 
 
+def _eq_gains(
+    plan: Plan, deck: int, parts: DeckRender, anchors: dict[str, float], stem: str | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(low, mid, high) per-sample linear gains of a deck's (or stem's) EQ;
+    a band without a lane stays at 0 dB."""
+    out = []
+    for band in ("low", "mid", "high"):
+        env = eq_envelope(plan, deck, band, parts.mix_tempo, anchors, stem)
+        if env is None:
+            out.append(np.ones(parts.total_samples, dtype=np.float32))
+        else:
+            db = render_envelope(env, parts.sample_rate, parts.total_samples)
+            out.append((10.0 ** (db / 20.0)).astype(np.float32))
+    return tuple(out)
+
+
+def _apply_eq(x, gains, bands, lo: int, hi: int) -> np.ndarray:
+    """x (already the band sum) with its bands scaled: see eq.py."""
+    g_low, g_mid, g_high = (g[lo:hi, None] for g in gains)
+    low, high = (b[lo:hi] for b in bands)
+    return x * g_mid + low * (g_low - g_mid) + high * (g_high - g_mid)
+
+
 def _echo_windows(plan: Plan, mix_tempo: float, anchors: dict[str, float], with_deck=False):
     for seg in plan.timeline:
         if isinstance(seg, TransitionSegment) and seg.style == "echo_out":
@@ -613,6 +709,20 @@ def _needs_seam(prev: _CompiledPlay, c: _CompiledPlay) -> bool:
         return True
     prev_track_end = prev.track_start_sample + (prev.mix_end_sample - prev.mix_start_sample)
     return c.track_start_sample != prev_track_end
+
+
+def _read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """An audio file (or a .npy array at 44.1 kHz) as frames × 2 float32."""
+    if path.suffix == ".npy":
+        data, sr = np.load(path).astype(np.float32), 44100
+        data = data if data.ndim == 2 else data[:, None]
+    else:
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    if data.shape[1] == 1:
+        data = np.repeat(data, 2, axis=1)  # mono → stereo
+    elif data.shape[1] > 2:
+        data = data[:, :2]
+    return data, int(sr)
 
 
 def _read_padded(audio: np.ndarray, start: int, n: int) -> np.ndarray:

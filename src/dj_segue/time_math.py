@@ -192,6 +192,17 @@ def transition_windows(
     return side(seg.out), side(seg.in_)
 
 
+def handoff_swap(
+    seg: TransitionSegment, mix_tempo: float, anchors: dict[str, float] | None = None
+) -> float:
+    """A vocal_handoff's vocal switch, in mix seconds (v0.8): `start_at` +
+    `swap_at.offset`, by default halfway through `duration`."""
+    start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
+    if seg.swap_at is None:
+        return start + duration_to_seconds(seg.duration, mix_tempo) / 2
+    return start + duration_to_seconds(seg.swap_at.offset, mix_tempo)
+
+
 @dataclass(frozen=True)
 class EchoWindow:
     """An echo_out's tail (v0.6), in mix seconds: repeats of the `every_sec`

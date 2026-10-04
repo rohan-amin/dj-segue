@@ -148,8 +148,12 @@ def test_untouched_deck_has_no_transition_envelope() -> None:
     assert 3 not in envs
 
 
-def test_vocal_handoff_is_not_compiled_here() -> None:
-    assert transition_envelopes(_plan([_xfade(1, 2, 4, 2, "vocal_handoff")]), 60.0) == {}
+def test_vocal_handoff_switches_decks_at_its_span() -> None:
+    """At deck level a handoff only switches the decks (the stems carry the
+    shape): in at its start, out at its end."""
+    env = transition_envelopes(_plan([_xfade(1, 2, 4, 2, "vocal_handoff")]), 60.0)
+    assert env[1].value_at(5.99) == 1.0 and env[1].value_at(6.0) == 0.0
+    assert env[2].value_at(3.98) == 0.0 and env[2].value_at(4.0) == 1.0
 
 
 # ---------------------------------------------------------------------------

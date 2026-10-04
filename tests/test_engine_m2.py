@@ -139,21 +139,3 @@ def test_exponential_deck_volume_fade(tmp_path) -> None:
     # Linear-in-dB to a -60 dB floor: halfway is -30 dB.
     assert out[_beat_sample(4)] == pytest.approx(10 ** (-30 / 20), rel=1e-3)
     assert out[_beat_sample(8)] == 0.0  # snaps to exactly 0 at the keyframe
-
-
-# ---------------------------------------------------------------------------
-# Unsupported features hard-fail
-# ---------------------------------------------------------------------------
-
-
-def test_stem_volume_lane_is_rejected(tmp_path) -> None:
-    sv = {"lane": "stem_volume", "deck": 1, "stem": "vocals",
-          "keyframes": [{"at": {"beat": 0}, "value": 0.0}]}
-    with pytest.raises(NotImplementedError, match="M3"):
-        _render(_plan(tmp_path, [_play(1, "one")], [sv]), tmp_path)
-
-
-def test_vocal_handoff_is_rejected(tmp_path) -> None:
-    plan = _plan(tmp_path, [_play(1, "one"), _play(2, "half"), _trans("vocal_handoff", 8, 4)])
-    with pytest.raises(NotImplementedError, match="vocal_handoff"):
-        _render(plan, tmp_path)

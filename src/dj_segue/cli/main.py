@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from dj_segue.executor.native import NativeEngine
 from dj_segue.inspect import format_plan
-from dj_segue.preprocessor import PreprocessResult, TempoNotDetectedError
+from dj_segue.preprocessor import PreprocessResult, TempoNotDetectedError, separate_stems
 from dj_segue.preprocessor import preprocess as run_preprocess
 from dj_segue.schema import (
     PlanValidationError,
@@ -82,6 +82,14 @@ def preprocess(
             db = "downbeat" if ta.primary.downbeat_times is not None else "first beat; no downbeat model"
             anchor = f", beat 0 @ {ta.grid.anchor_sec * 1000:.1f} ms ({db})"
         typer.echo(f"  {tid:<16} {tempo}{anchor}, {ta.primary.duration_sec:.1f}s")
+
+    def on_track(tid: str, cached: bool) -> None:
+        if not cached:
+            typer.echo(f"  {tid:<16} separating stems (~40 s; cached after)…")
+
+    separated, cached = separate_stems(plan, audio_root, on_track)
+    if separated or cached:
+        typer.echo(f"stems: {separated} separated, {cached} cached")
 
 
 def _grids_or_die(pre: PreprocessResult):

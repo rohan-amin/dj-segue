@@ -87,6 +87,9 @@ def test_keyframe_ordering_uses_mixed_units(minimal_plan_data) -> None:
 
 
 def test_stem_volume_requires_stem_on_deck_tracks(minimal_plan_data) -> None:
+    # A path track has the four separated stems; explicit stems are what's listed.
+    minimal_plan_data["tracks"]["a"] = {"stems": {"drums": "d.wav", "other": "o.wav"},
+                                        "bpm": 120, "cues": {"drop": {"beat": 16}}}
     minimal_plan_data["automation"].append(
         {
             "lane": "stem_volume",
@@ -102,6 +105,8 @@ def test_stem_volume_requires_stem_on_deck_tracks(minimal_plan_data) -> None:
 
 
 def test_vocal_handoff_requires_vocals_stem(minimal_plan_data) -> None:
+    minimal_plan_data["tracks"]["b"] = {"stems": {"drums": "d.wav", "other": "o.wav"},
+                                        "bpm": 120}
     minimal_plan_data["timeline"].append(
         {
             "type": "transition",

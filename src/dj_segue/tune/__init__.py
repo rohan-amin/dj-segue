@@ -65,7 +65,7 @@ from dj_segue.time_math import (
 CURVES = ("equal_power", "linear", "exponential")
 STYLES = ("crossfade", "echo_out")
 PARAMS = ("low", "mid", "high", "filter")  # the lanes the page edits per deck
-VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7")
+VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8")
 CONTEXT_BEATS = 16  # shown either side of a transition
 PEAK_BUCKETS = 2400
 GAIN_RATE = 100  # Hz, for drawing the gain curves
@@ -202,7 +202,8 @@ class TuneSession:
         for i, lane in enumerate(self.plan.automation):
             if param == "filter" and isinstance(lane, FilterLane) and lane.deck == deck:
                 return i
-            if isinstance(lane, EqLane) and lane.deck == deck and lane.band == param:
+            if (isinstance(lane, EqLane) and lane.deck == deck and lane.band == param
+                    and lane.stem is None):
                 return i
         return None
 

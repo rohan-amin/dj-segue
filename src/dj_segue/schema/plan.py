@@ -1,6 +1,6 @@
 """Pydantic models for the dj-segue plan schema (v0.1–v0.5).
 
-The shape mirrors `docs/schema-v0.7.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.8.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -164,6 +164,18 @@ class Track(BaseModel):
         return v
 
 
+# The stems a `path` track gets from the separator (M3, dj_segue.stems).
+SEPARATED_STEMS = ("vocals", "drums", "bass", "other")
+
+
+def available_stems(track: "Track") -> tuple[str, ...]:
+    """The stems a track can be mixed by: its own `stems`, or for a `path`
+    track (stems == {"full": …}) the four the separator produces."""
+    if list(track.stems) == ["full"]:
+        return SEPARATED_STEMS
+    return tuple(track.stems)
+
+
 class Deck(BaseModel):
     model_config = _FORBID
     label: str | None = None
@@ -293,6 +305,13 @@ class Echo(BaseModel):
     highpass: float = Field(default=0.0, ge=0, le=1)
 
 
+class SwapAt(BaseModel):
+    """v0.8: where a vocal_handoff switches vocals, from its `start_at`."""
+
+    model_config = _FORBID
+    offset: Duration
+
+
 class TransitionSegment(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     type: Literal["transition"]
@@ -306,6 +325,7 @@ class TransitionSegment(BaseModel):
     out: TransitionSide | None = None  # v0.4: the from_deck's fade
     in_: TransitionSide | None = Field(default=None, alias="in")  # v0.4: the to_deck's fade
     echo: Echo | None = None  # v0.6; echo_out only
+    swap_at: SwapAt | None = None  # v0.8; vocal_handoff only (default: halfway)
 
     @model_validator(mode="after")
     def _shaping_is_crossfade_only(self) -> "TransitionSegment":
@@ -316,19 +336,23 @@ class TransitionSegment(BaseModel):
                     raise ValueError(
                         f"a drawn `{name}` curve must go from {start} to {1 - start}"
                     )
+        if self.swap_at is not None and self.style != "vocal_handoff":
+            raise ValueError("only vocal_handoff transitions take `swap_at`")
         if (self.style == "echo_out") != (self.echo is not None):
             raise ValueError("echo_out transitions need `echo`, and only they take it")
         if self.style == "echo_out":
             used = [k for k, v in (("curve", self.curve), ("out", self.out)) if v is not None]
             if used:
                 raise ValueError(f"{', '.join(used)} don't apply to echo_out (only `in`)")
-        elif self.style != "crossfade":
+        elif self.style not in ("crossfade", "vocal_handoff"):
             used = [
                 k for k, v in (("curve", self.curve), ("out", self.out), ("in", self.in_))
                 if v is not None
             ]
             if used:
-                raise ValueError(f"{', '.join(used)} only apply to crossfade transitions")
+                raise ValueError(
+                    f"{', '.join(used)} only apply to crossfade and vocal_handoff transitions"
+                )
         return self
 
 
@@ -384,6 +408,7 @@ class EqLane(BaseModel):
     lane: Literal["eq"]
     deck: int
     band: EqBand
+    stem: str | None = None  # v0.8: EQ one stem of the deck (None = the whole deck)
     keyframes: list[DbKeyframe]
     interpolation: Interpolation = "linear"
 
@@ -462,6 +487,22 @@ class Plan(BaseModel):
                 if isinstance(seg, TransitionSegment)
                 for name, side in (("out", seg.out), ("in", seg.in_))
                 if side is not None and isinstance(side.curve, PointCurve)
+            ]
+        if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"):
+            problems += [
+                f"timeline[{i}]: swap_at requires schema_version 0.8"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, TransitionSegment) and seg.swap_at is not None
+            ] + [
+                f"automation[{i}]: an eq lane's `stem` requires schema_version 0.8"
+                for i, lane in enumerate(self.automation)
+                if isinstance(lane, EqLane) and lane.stem is not None
+            ] + [
+                f"timeline[{i}]: vocal_handoff {what} requires schema_version 0.8"
+                for i, seg in enumerate(self.timeline)
+                if isinstance(seg, TransitionSegment) and seg.style == "vocal_handoff"
+                for what, val in (("curve", seg.curve), ("out", seg.out), ("in", seg.in_))
+                if val is not None
             ]
         if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6"):
             problems += [

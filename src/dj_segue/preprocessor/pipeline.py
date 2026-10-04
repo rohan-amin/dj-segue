@@ -111,3 +111,39 @@ def preprocess(plan: Plan, audio_root: Path) -> PreprocessResult:
         cached_count=cached,
         analyzed_count=analyzed,
     )
+
+
+def separate_stems(plan: Plan, audio_root: Path, on_track=None) -> tuple[int, int]:
+    """Separate (and cache) the stems of every `path` track that plays on a
+    deck mixed by stems (M3). Returns (separated, already cached).
+    `on_track(track_id, cached)` is called before each one."""
+    import soundfile as sf
+
+    from dj_segue.schema.plan import LoopSegment, PlaySegment
+    from dj_segue.schema.validator import stem_decks
+    from dj_segue.stems import is_cached, stems_for
+
+    decks = stem_decks(plan)
+    tids = sorted({
+        seg.track for seg in plan.timeline
+        if isinstance(seg, (PlaySegment, LoopSegment)) and seg.deck in decks
+    })
+    separated = cached = 0
+    for tid in tids:
+        track = plan.tracks[tid]
+        if list(track.stems) != ["full"]:
+            continue  # explicit stems
+        audio, sr = sf.read(
+            str((Path(audio_root) / track.stems["full"]).resolve()), dtype="float32",
+            always_2d=True,
+        )
+        if audio.shape[1] == 1:
+            audio = audio.repeat(2, axis=1)
+        audio = audio[:, :2]
+        hit = is_cached(audio, sr)
+        if on_track is not None:
+            on_track(tid, hit)
+        stems_for(audio, sr)
+        cached += hit
+        separated += not hit
+    return separated, cached
