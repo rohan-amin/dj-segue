@@ -27,6 +27,7 @@ dj-segue play       examples/fancy_likeem.plan.jsonc --watch --from 192   # edit
 dj-segue play       examples/crossfade_mix.plan.jsonc --render-to /tmp/out.wav
 dj-segue scrub      audio/some_track.mp3                # find beat numbers by ear
 dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by ear
+dj-segue annotate   audio/some_track.mp3                # mark phrases, key, notes (for planning)
 ```
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
@@ -61,6 +62,12 @@ coming; see M4.5 in `docs/milestones.md`.)
 once; `--from BEAT` starts part-way. With `--watch`, saving the plan (by hand or from
 `tune`) applies the change about a third of a second ahead of what you're hearing. Live
 and `--render-to` produce the same samples (played from the top).
+
+`dj-segue annotate <file>` describes a track for planning transitions: check the beat grid
+(click track; ½× / 2×, downbeat ±1 beat), tap number keys while it plays to mark and label
+each section (intro, verse, hook, …), check the key against a drone, and add notes and tags.
+It starts from a draft (detected sections, key, and per-bar activity of each stem) and saves
+`annotations/<track>.json`.
 
 A plan's mix tempo can change partway (schema 0.9 `meta.tempo_map`): a step, or a ramp
 over some beats. Segments at `"target_bpm": "mix"` follow it, staying beatmatched; see

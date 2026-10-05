@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annotate</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dcdad4;
+    --wave: #8d8a82; --accent: #2f6fdb; --break: #f2b13a; --loop: rgba(47, 111, 219, 0.16);
+    --energy: #d9542b; --bass: #6b4fc9; --vocals: #c2368f; --drums: #2f8f6b; --bassstem: #6b4fc9; --other: #b07a24;
+    --btn: #eeece7; --btn-on: #1d1d1b; --btn-on-ink: #ffffff; --bad: #c0392b; --sel: rgba(47, 111, 219, 0.22);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1e1e1c; --ink: #ecebe6; --muted: #9a988f; --line: #34332f;
+      --wave: #6d6b64; --accent: #6ea0ff; --break: #e0a232; --loop: rgba(110, 160, 255, 0.2);
+      --energy: #ef7a52; --bass: #9d86f0; --vocals: #e86bb7; --drums: #4fc29a; --bassstem: #9d86f0; --other: #d9a24a;
+      --btn: #2a2a27; --btn-on: #ecebe6; --btn-on-ink: #151514; --bad: #ff6b5b; --sel: rgba(110, 160, 255, 0.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 1240px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  .meta, #status { color: var(--muted); }
+  #dirty { color: var(--energy); font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  canvas { display: block; width: 100%; }
+  #overview { height: 230px; cursor: pointer; }
+  #zoom { height: 150px; cursor: pointer; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row + .row { margin-top: 8px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; }
+  button, select, input, textarea { font: inherit; }
+  button, select { border: 0; background: var(--btn); color: var(--ink); border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+  button:hover { filter: brightness(0.95); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.on { background: var(--btn-on); color: var(--btn-on-ink); }
+  button.play, button.primary { font-weight: 600; background: var(--accent); color: #fff; }
+  button.play { min-width: 90px; }
+  input[type=text], textarea { width: 100%; padding: 7px 8px; border-radius: 7px; border: 1px solid var(--line);
+                               background: var(--panel); color: var(--ink); }
+  textarea { min-height: 60px; resize: vertical; }
+  .beat { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .beat small { font-size: 13px; font-weight: 500; color: var(--muted); margin-right: 6px; }
+  .nums { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .nums b { color: var(--ink); }
+  .labels button { padding: 6px 9px; }
+  .labels kbd { margin-right: 4px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px 6px; }
+  td { padding: 3px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+  tr.sel td { background: var(--sel); }
+  td select { padding: 4px 6px; }
+  td input[type=text] { padding: 4px 6px; }
+  .warn { color: var(--bad); }
+  .ok { color: var(--drums); font-weight: 600; }
+  .keys { color: var(--muted); font-size: 12px; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+  .heat { display: inline-block; width: 46px; height: 10px; border-radius: 2px; vertical-align: middle; }
+  pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+  details summary { cursor: pointer; color: var(--muted); }
+  #toast { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 12px;
+           border-radius: 8px; background: var(--panel); border: 1px solid var(--bad); color: var(--bad);
+           box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+</style>
+</head>
+<body>
+<main>
+  <div id="toast" hidden role="alert"></div>
+  <header>
+    <h1 id="title">Loading…</h1>
+    <span class="meta" id="meta"></span>
+    <span id="dirty" hidden title="Not saved to the annotation file yet">● Unsaved</span>
+    <span id="status"></span>
+    <span style="flex:1"></span>
+    <button class="primary" id="save" title="Save the annotation (⌘S)">Save</button>
+  </header>
+
+  <div class="panel">
+    <div class="label"><span>Whole song — click to jump · the top lane is your phrases: click one to select it, drag a boundary to move it</span>
+      <span class="legend">
+        <span title="Overall loudness per bar"><i class="sw" style="background:var(--energy)"></i>energy</span>
+        <span title="Low end (kick + bass) per bar"><i class="sw" style="background:var(--bass)"></i>low end</span>
+        <span title="How much each separated stem plays, per bar"><i class="sw" style="background:var(--vocals)"></i>vocals
+          <i class="sw" style="background:var(--drums)"></i>drums <i class="sw" style="background:var(--bassstem)"></i>bass
+          <i class="sw" style="background:var(--other)"></i>other</span>
+        <span title="Short bass drop-outs before a phrase comes back in"><i class="sw" style="background:var(--break)"></i>break</span>
+      </span></div>
+    <canvas id="overview"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="label"><span id="zoomLabel">8 bars</span><span>click to jump to a beat</span></div>
+    <canvas id="zoom"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="beat" title="The beat you're hearing (beat 0 = first downbeat; the numbers a plan uses)"><small>BEAT</small><span id="beatNum">–</span></div>
+      <div class="nums"><b id="barNum">bar –</b> · <span id="inBar">–</span> of 4<br><span id="where"></span></div>
+      <span style="flex:1"></span>
+      <button title="Back 1 bar (↓)" data-seek="-4">‹ bar</button>
+      <button class="play" id="play" title="Play / pause (space)">▶ Play</button>
+      <button title="Forward 1 bar (↑)" data-seek="4">bar ›</button>
+      <button id="prevP" title="Previous phrase (p)">⇤ phrase</button>
+      <button id="nextP" title="Next phrase (n)">phrase ⇥</button>
+      <button id="loopP" title="Loop the selected phrase (l)">Loop phrase</button>
+      <button id="click" title="Metronome on the grid (c) — the high click is the downbeat">Click</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Phrases</h2>
+    <div class="row labels" id="labelBtns" title="While it plays, press a number at each section start: a phrase starts on the nearest bar with that label. Paused: labels the selected phrase."></div>
+    <div class="row">
+      <button id="split" title="Start a new phrase at the nearest bar to what you're hearing (s)">Split here</button>
+      <button id="merge" title="Remove the selected phrase's start, merging it into the one before (⌫)">Merge into previous</button>
+      <button id="useSugg" title="Replace all phrases with the detected section starts (keeps nothing)">Reset to detected</button>
+      <button id="undo" title="Undo (⌘Z)" disabled>↶ Undo</button>
+      <span class="keys">Tap <kbd>1</kbd>–<kbd>9</kbd> while playing to mark each section as it starts · faint ticks on the phrase lane are detected section starts</span>
+    </div>
+    <table style="margin-top:10px">
+      <thead><tr><th></th><th title="First bar – last bar">bars</th><th title="Beats, as a plan writes them">beats</th><th title="Phrases are usually 4, 8, 16 or 32 bars">length</th>
+        <th>label</th><th title="What's playing on average (from the stems)">vocals · drums · bass · other</th><th>energy</th><th>note</th></tr></thead>
+      <tbody id="phraseRows"></tbody>
+    </table>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h2>Beat grid <span id="gridOk"></span></h2>
+      <div class="nums" id="gridInfo"></div>
+      <div class="row">
+        <button id="half" title="The grid is at double the real tempo: halve it">½× tempo</button>
+        <button id="double" title="The grid is at half the real tempo: double it">2× tempo</button>
+        <button id="early" title="Bar lines are a beat late: make the downbeat one beat earlier">Downbeat −1 beat</button>
+        <button id="late" title="Bar lines are a beat early: make the downbeat one beat later">Downbeat +1 beat</button>
+      </div>
+      <div class="row">
+        <button id="nudgeE" title="Grid 10 ms earlier">−10 ms</button>
+        <button id="nudgeL" title="Grid 10 ms later">+10 ms</button>
+        <button id="gridCheck" title="Mark the grid as checked: the click lands on the beats and the high click on each bar's first beat">Grid sounds right ✓</button>
+      </div>
+      <p class="keys">Turn on <b>Click</b> and listen: every click on a beat, the high one on the downbeat (the "1" of each bar). Changing the grid re-measures the bars (a few seconds).</p>
+    </div>
+    <div class="panel">
+      <h2>Key <span id="keyOk"></span></h2>
+      <div class="nums" id="keyInfo"></div>
+      <div class="row">
+        <select id="key" title="The track's key (Camelot number in brackets)"></select>
+        <button id="drone" title="Play a quiet chord of the key under the music: if it's right it blends, if not it clashes">Drone</button>
+        <button id="keyCheck" title="Mark the key as checked by ear">Key sounds right ✓</button>
+      </div>
+      <p class="keys">Play a hook with <b>Drone</b> on. The right key just sounds fuller; a wrong one rubs. Try the relative major/minor (same notes) and a fifth up or down if it's close.</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>The track</h2>
+    <div class="row"><input type="text" id="tags" placeholder="Tags, comma-separated: e.g. hip-hop, party, big hook, 2000s"
+      title="A few words a DJ would use: genre, mood, era, energy"></div>
+    <div class="row"><textarea id="notes" placeholder="Anything else a DJ should know: where it's best mixed in or out, what makes it work, what to avoid…"></textarea></div>
+  </div>
+
+  <div class="panel">
+    <details><summary>What the planner will read (from this annotation)</summary><pre id="summary"></pre></details>
+  </div>
+
+  <p class="keys">
+    <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> beat · <kbd>↓</kbd><kbd>↑</kbd> bar · <kbd>n</kbd><kbd>p</kbd> phrase ·
+    <kbd>1</kbd>–<kbd>9</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge · <kbd>l</kbd> loop phrase ·
+    <kbd>c</kbd> click · <kbd>⌘S</kbd> save · <kbd>⌘Z</kbd> undo
+  </p>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const KEYS_FOR = ["intro", "verse", "pre-hook", "hook", "breakdown", "build", "drop", "outro", "bridge"];
+const LABEL_COLORS = { intro: "#8d8a82", verse: "#2f8f6b", "pre-hook": "#7aa83a", hook: "#d9542b", breakdown: "#6b4fc9",
+  build: "#b07a24", drop: "#c0392b", outro: "#5a6b7a", bridge: "#2f6fdb", "?": "#b9b6ad" };
+const STEM_ROWS = [["vocals", "--vocals"], ["drums", "--drums"], ["bass", "--bassstem"], ["other", "--other"]];
+
+let A = null;           // annotation (+ summary, labels, keys) from the server
+let phrases = [];       // [{bar, label, note}] — lengths come from the next start
+let selected = 0;       // selected phrase index
+let history = [];       // phrase snapshots for undo
+let dirty = false;
+let buf = null, clickBuf = null, ctx = null, master = null, clickGain = null, droneGain = null;
+let src = null, clickSrc = null, drone = [];
+const st = { playing: false, offset: 0, startCtx: 0, startOff: 0, loop: null, click: false };
+let dragB = null;       // boundary drag: {i, x0}
+
+// ---------------------------------------------------------------- grid
+const beatSec = () => 60 / A.bpm;
+const secOf = (beat) => A.anchor_sec + beat * beatSec();
+const beatAt = (sec) => (sec - A.anchor_sec) / beatSec();
+const nBars = () => A.bars.energy.length;
+const barSec = (bar) => secOf(4 * bar);
+const lenOf = (i) => (i + 1 < phrases.length ? phrases[i + 1].bar : nBars()) - phrases[i].bar;
+const phraseAt = (bar) => { let i = 0; while (i + 1 < phrases.length && phrases[i + 1].bar <= bar) i++; return i; };
+
+// ---------------------------------------------------------------- transport
+function audioCtx() {
+  if (!ctx) {
+    ctx = new AudioContext();
+    master = ctx.createGain(); master.connect(ctx.destination);
+    clickGain = ctx.createGain(); clickGain.gain.value = 0; clickGain.connect(ctx.destination);
+    droneGain = ctx.createGain(); droneGain.gain.value = 0; droneGain.connect(ctx.destination);
+  }
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+function trackTime(latency = 0) {
+  if (!st.playing) return st.offset;
+  let t = st.startOff + Math.max(0, ctx.currentTime - st.startCtx - latency);
+  const L = st.loop;
+  if (L && st.startOff < L.b && t >= L.b) t = L.a + ((t - L.a) % (L.b - L.a));
+  return Math.min(t, A.duration_sec);
+}
+const heard = () => trackTime(ctx ? (ctx.outputLatency || 0) + (ctx.baseLatency || 0) : 0);
+function stopSources() {
+  for (const s of [src, clickSrc]) if (s) { s.onended = null; try { s.stop(); } catch (e) {} }
+  src = clickSrc = null;
+}
+function start(offset) {
+  audioCtx(); stopSources();
+  const when = ctx.currentTime + 0.02;
+  const make = (b, out) => {
+    const s = ctx.createBufferSource(); s.buffer = b; s.connect(out);
+    if (st.loop) { s.loop = true; s.loopStart = st.loop.a; s.loopEnd = st.loop.b; }
+    s.start(when, Math.max(0, offset)); return s;
+  };
+  src = make(buf, master); clickSrc = make(clickBuf, clickGain);
+  st.playing = true; st.startCtx = when; st.startOff = offset;
+  const mine = src;
+  src.onended = () => { if (src !== mine) return; st.offset = A.duration_sec; st.playing = false; stopSources(); updateButtons(); };
+  updateButtons();
+}
+function pause() { st.offset = trackTime(); st.playing = false; stopSources(); updateButtons(); }
+function togglePlay() {
+  if (!buf) { toast("Still decoding the audio — a moment."); return; }
+  if (st.playing) return pause();
+  if (st.offset >= A.duration_sec - 0.05) st.offset = Math.max(0, secOf(0));
+  start(st.offset);
+}
+function gotoSec(t) {
+  t = Math.max(0, Math.min(A.duration_sec - 0.01, t));
+  if (st.loop && (t < st.loop.a || t >= st.loop.b)) st.loop = null;
+  if (st.playing) start(t); else { st.offset = t; updateButtons(); }
+}
+const gotoBeat = (b) => gotoSec(secOf(Math.round(b)));
+const currentBeat = () => Math.floor(beatAt(heard()) + 1e-6);
+// The bar a tap means: the nearest downbeat to what you're hearing.
+const nearestBar = () => Math.max(0, Math.min(nBars() - 1, Math.round(beatAt(heard()) / 4)));
+
+function loopPhrase() {
+  if (st.loop) { const t = trackTime(); st.loop = null; if (st.playing) start(t); updateButtons(); return; }
+  const p = phrases[selected], a = barSec(p.bar), b = barSec(p.bar + lenOf(selected));
+  st.loop = { a: Math.max(0, a), b: Math.min(A.duration_sec, b) };
+  start(st.loop.a);
+}
+function toggleClick() { st.click = !st.click; audioCtx(); clickGain.gain.value = st.click ? 0.6 : 0; updateButtons(); }
+
+function buildClickTrack() {
+  const rate = 16000, n = Math.ceil(A.duration_sec * rate);
+  const b = new AudioBuffer({ length: n, sampleRate: rate, numberOfChannels: 1 }), d = b.getChannelData(0);
+  const len = Math.round(0.03 * rate);
+  for (let beat = Math.ceil(beatAt(0)); ; beat++) {
+    const s = Math.round(secOf(beat) * rate);
+    if (s >= n) break;
+    if (s < 0) continue;
+    const f = ((beat % 4) + 4) % 4 === 0 ? 1760 : 880;
+    for (let i = 0; i < len && s + i < n; i++) d[s + i] += Math.sin(2 * Math.PI * f * i / rate) * Math.exp(-i / (len / 5)) * 0.5;
+  }
+  return b;
+}
+
+// A quiet chord of the selected key (root, third, fifth around C3–B3).
+function setDrone(on) {
+  audioCtx();
+  for (const o of drone) o.stop();
+  drone = [];
+  droneGain.gain.value = on ? 0.05 : 0;
+  if (on) {
+    const [name, mode] = $("key").value.split(" ");
+    const names = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+    const root = 48 + names.indexOf(name);
+    for (const step of [0, mode === "minor" ? 3 : 4, 7, 12]) {
+      const o = ctx.createOscillator(); o.type = "triangle";
+      o.frequency.value = 440 * Math.pow(2, (root + step - 69) / 12);
+      o.connect(droneGain); o.start(); drone.push(o);
+    }
+  }
+  $("drone").classList.toggle("on", on);
+}
+
+// ---------------------------------------------------------------- edits
+function snapshot() { history.push(JSON.stringify({ phrases, selected })); $("undo").disabled = false; }
+function undo() {
+  if (!history.length) return;
+  ({ phrases, selected } = JSON.parse(history.pop()));
+  $("undo").disabled = !history.length; changed();
+}
+function changed() { dirty = true; $("dirty").hidden = false; renderPhrases(); }
+
+function addStart(bar, label) {
+  snapshot();
+  const i = phrases.findIndex((p) => p.bar === bar);
+  if (i >= 0) { if (label) phrases[i].label = label; selected = i; }
+  else {
+    phrases.push({ bar, label: label || "?", note: "" });
+    phrases.sort((a, b) => a.bar - b.bar);
+    selected = phrases.findIndex((p) => p.bar === bar);
+  }
+  changed();
+}
+function tapLabel(label) {
+  if (st.playing) addStart(nearestBar(), label);
+  else { snapshot(); phrases[selected].label = label; changed(); }
+}
+function mergeSelected() {
+  if (selected === 0) { toast("The first phrase starts the song; there's nothing before it to merge into."); return; }
+  snapshot(); phrases.splice(selected, 1); selected -= 1; changed();
+}
+function resetToDetected() {
+  if (!confirm("Replace all phrases (and their labels and notes) with the detected section starts?")) return;
+  snapshot();
+  phrases = [0, ...A.suggestions.filter((b) => b > 0 && b < nBars())].map((bar) => ({ bar, label: "?", note: "" }));
+  selected = 0; changed();
+}
+
+// ---------------------------------------------------------------- server
+async function post(path, body) {
+  const res = await (await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify(body) })).json();
+  if (!res.ok) { toast(res.error); return null; }
+  return res;
+}
+function body() {
+  return { phrases, key: $("key").value, key_checked: A.key_checked, grid_checked: A.grid_checked,
+           tags: $("tags").value.split(","), notes: $("notes").value };
+}
+async function save() {
+  $("status").textContent = "saving…";
+  const res = await post("/save", body());
+  $("status").textContent = "";
+  if (!res) return;
+  load(res, false);
+  dirty = false; $("dirty").hidden = true;
+  $("status").textContent = `saved ✓ (${res.saved_to})`;
+  setTimeout(() => { if ($("status").textContent.startsWith("saved")) $("status").textContent = ""; }, 3000);
+}
+async function setGrid(bpm, anchor) {
+  if (dirty) { const res = await post("/save", body()); if (!res) return; }
+  $("status").textContent = "re-measuring the bars…";
+  const pos = heard(), wasPlaying = st.playing;
+  if (wasPlaying) pause();
+  const res = await post("/grid", { bpm, anchor_sec: anchor });
+  $("status").textContent = "";
+  if (!res) return;
+  A.grid_checked = false;
+  load(res, true);
+  history = []; $("undo").disabled = true;
+  dirty = true; $("dirty").hidden = false;  // the new grid isn't saved yet
+  st.offset = pos; if (wasPlaying) start(pos);
+}
+function toast(text) {
+  $("toast").textContent = text; $("toast").hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => ($("toast").hidden = true), 6000);
+}
+
+// ---------------------------------------------------------------- drawing
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function fit(c) {
+  const dpr = window.devicePixelRatio || 1, w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return dpr;
+}
+function peaks(t0, t1, cols) {
+  const sr = buf.sampleRate, ch = [buf.getChannelData(0), buf.getChannelData(buf.numberOfChannels > 1 ? 1 : 0)];
+  const out = new Float32Array(cols * 2), s0 = t0 * sr, per = (t1 - t0) * sr / cols;
+  for (let c = 0; c < cols; c++) {
+    let lo = 0, hi = 0;
+    const a = Math.max(0, Math.floor(s0 + c * per)), b = Math.min(ch[0].length, Math.floor(s0 + (c + 1) * per));
+    const step = Math.max(1, Math.floor((b - a) / 400));
+    for (let i = a; i < b; i += step) { const v = (ch[0][i] + ch[1][i]) / 2; if (v < lo) lo = v; if (v > hi) hi = v; }
+    out[2 * c] = lo; out[2 * c + 1] = hi;
+  }
+  return out;
+}
+
+// Overview layout (CSS pixels): phrase lane, waveform, then strips.
+const OV = { lane: 26, wave: 92, strip: 14, gap: 3 };
+const ROWS = [["energy", "--energy", "energy"], ["bass", "--bass", "low end"],
+  ...STEM_ROWS.map(([k, c]) => [k, c, k])];
+const ovBase = { img: null, key: "" };
+function drawOverviewBase() {
+  const c = $("overview"), dpr = fit(c), W = c.width;
+  const key = `${W}x${c.height}:${A.bpm}:${A.anchor_sec}`;
+  if (ovBase.key === key) return;
+  const off = document.createElement("canvas"); off.width = W; off.height = c.height;
+  const g = off.getContext("2d"), x = (s) => s / A.duration_sec * W, top = OV.lane * dpr, wh = OV.wave * dpr;
+  g.fillStyle = css("--break"); g.globalAlpha = 0.35;
+  for (const [a, b] of A.breaks) g.fillRect(x(barSec(a)), top, Math.max(2, x(barSec(b)) - x(barSec(a))), wh);
+  g.globalAlpha = 1;
+  const p = peaks(0, A.duration_sec, W), mid = top + wh / 2;
+  g.fillStyle = css("--wave");
+  for (let i = 0; i < W; i++) { const y1 = mid - p[2 * i + 1] * wh / 2, y2 = mid - p[2 * i] * wh / 2; g.fillRect(i, y1, 1, Math.max(1, y2 - y1)); }
+  let y = top + wh + OV.gap * dpr;
+  g.font = `600 ${9 * dpr}px -apple-system, sans-serif`; g.textBaseline = "middle";
+  for (const [k, col, name] of ROWS) {
+    const vals = A.bars[k] || [];
+    g.fillStyle = css(col);
+    for (let i = 0; i < vals.length; i++) {
+      g.globalAlpha = 0.06 + 0.94 * vals[i];
+      const x1 = x(barSec(i)), x2 = x(barSec(i + 1));
+      g.fillRect(x1, y, Math.max(1, x2 - x1 - 0.5), OV.strip * dpr);
+    }
+    g.globalAlpha = 0.9; g.fillStyle = css("--panel"); g.fillRect(2 * dpr, y + 1, g.measureText(name).width + 6 * dpr, OV.strip * dpr - 2);
+    g.globalAlpha = 1; g.fillStyle = css("--ink"); g.fillText(name, 5 * dpr, y + OV.strip * dpr / 2);
+    y += (OV.strip + OV.gap) * dpr;
+  }
+  ovBase.img = off; ovBase.key = key;
+}
+function drawOverview() {
+  drawOverviewBase();
+  const c = $("overview"), g = c.getContext("2d"), W = c.width, H = c.height, dpr = window.devicePixelRatio || 1;
+  const x = (s) => s / A.duration_sec * W, lane = OV.lane * dpr;
+  g.clearRect(0, 0, W, H); g.drawImage(ovBase.img, 0, 0);
+  // Phrase lane.
+  g.font = `600 ${10.5 * dpr}px -apple-system, sans-serif`; g.textBaseline = "middle";
+  phrases.forEach((p, i) => {
+    const x1 = x(barSec(p.bar)), x2 = x(barSec(p.bar + lenOf(i)));
+    g.fillStyle = LABEL_COLORS[p.label] || LABEL_COLORS["?"];
+    g.globalAlpha = i === selected ? 1 : 0.75;
+    g.fillRect(x1, 2 * dpr, Math.max(1, x2 - x1 - dpr), lane - 6 * dpr);
+    if (i === selected) { g.strokeStyle = css("--ink"); g.lineWidth = 2 * dpr; g.strokeRect(x1 + dpr, 3 * dpr, x2 - x1 - 3 * dpr, lane - 8 * dpr); }
+    g.globalAlpha = 1; g.fillStyle = "#fff";
+    const text = p.label === "?" ? "?" : p.label;
+    if (g.measureText(text).width < x2 - x1 - 6 * dpr) g.fillText(text, x1 + 4 * dpr, lane / 2 - dpr);
+    g.fillStyle = css("--ink"); g.globalAlpha = 0.35; g.fillRect(x1, lane, dpr, H - lane); g.globalAlpha = 1;
+  });
+  // Detected section starts: small ticks under the lane.
+  g.fillStyle = css("--muted");
+  for (const b of A.suggestions) g.fillRect(x(barSec(b)) - dpr / 2, lane - 4 * dpr, dpr, 4 * dpr);
+  if (st.loop) { g.fillStyle = css("--loop"); g.fillRect(x(st.loop.a), 0, x(st.loop.b) - x(st.loop.a), H); }
+  g.fillStyle = css("--accent"); g.fillRect(Math.round(x(heard())) - dpr, 0, 2 * dpr, H);
+}
+
+const PAGE_BARS = 8;
+const zm = { img: null, key: "", range: [0, 1] };
+function drawZoom() {
+  const c = $("zoom"), dpr = fit(c), W = c.width, H = c.height, g = c.getContext("2d");
+  const page = Math.floor(currentBeat() / (4 * PAGE_BARS));
+  const b0 = page * 4 * PAGE_BARS, b1 = b0 + 4 * PAGE_BARS, t0 = secOf(b0), t1 = secOf(b1);
+  const x = (s) => (s - t0) / (t1 - t0) * W, labelH = 16 * dpr, wh = H - labelH, mid = labelH + wh / 2;
+  const key = `${W}x${H}:${page}:${A.bpm}:${A.anchor_sec}`;
+  if (zm.key !== key) {
+    const off = document.createElement("canvas"); off.width = W; off.height = H;
+    const o = off.getContext("2d");
+    const p = peaks(Math.max(0, t0), Math.min(A.duration_sec, t1), W);
+    const xs = x(Math.max(0, t0)), scale = (x(Math.min(A.duration_sec, t1)) - xs) / W;
+    o.fillStyle = css("--wave");
+    for (let i = 0; i < W; i++) { const y1 = mid - p[2 * i + 1] * wh / 2, y2 = mid - p[2 * i] * wh / 2; o.fillRect(xs + i * scale, y1, Math.max(1, scale), Math.max(1, y2 - y1)); }
+    zm.img = off; zm.key = key; zm.range = [t0, t1];
+    $("zoomLabel").textContent = `Beats ${b0}–${b1 - 1} (bars ${b0 / 4}–${b1 / 4 - 1})`;
+  }
+  g.clearRect(0, 0, W, H); g.drawImage(zm.img, 0, 0);
+  g.font = `${11 * dpr}px -apple-system, sans-serif`; g.textBaseline = "top";
+  const starts = new Map(phrases.map((p) => [p.bar, p]));
+  for (let beat = b0; beat <= b1; beat++) {
+    const xx = Math.round(x(secOf(beat))), down = beat % 4 === 0, p = down && starts.get(beat / 4);
+    g.fillStyle = p ? (LABEL_COLORS[p.label] || css("--ink")) : down ? css("--muted") : css("--line");
+    g.fillRect(xx, labelH, p ? 3 * dpr : dpr, wh);
+    if (down && beat < b1) {
+      g.fillStyle = css("--ink"); g.fillText(`${beat}`, xx + 3 * dpr, 2 * dpr);
+      g.fillStyle = p ? (LABEL_COLORS[p.label] || css("--muted")) : css("--muted");
+      g.fillText(p ? `bar ${beat / 4} · ${p.label}` : `bar ${beat / 4}`, xx + 3 * dpr + g.measureText(`${beat}`).width + 6 * dpr, 2 * dpr);
+    }
+  }
+  if (st.loop) { g.fillStyle = css("--loop"); g.fillRect(x(st.loop.a), labelH, x(st.loop.b) - x(st.loop.a), H); }
+  g.fillStyle = css("--accent"); g.fillRect(Math.round(x(heard())) - dpr, labelH, 2 * dpr, H - labelH);
+}
+
+// ---------------------------------------------------------------- panels
+let lastBeat = null;
+function updateReadout() {
+  const whole = currentBeat(), inBar = ((whole % 4) + 4) % 4;
+  if (whole === lastBeat) return;
+  lastBeat = whole;
+  $("beatNum").textContent = whole;
+  $("barNum").textContent = `bar ${Math.floor(whole / 4)}`;
+  $("inBar").textContent = `beat ${inBar + 1}`;
+  const bar = Math.floor(whole / 4), i = phraseAt(bar), p = phrases[i];
+  $("where").textContent = `${p.label === "?" ? "unlabeled phrase" : p.label} · bar ${bar - p.bar + 1} of ${lenOf(i)}`;
+}
+function updateButtons() {
+  $("play").textContent = st.playing ? "❚❚ Pause" : "▶ Play";
+  $("click").classList.toggle("on", st.click);
+  $("loopP").classList.toggle("on", !!st.loop);
+}
+function heat(v, col) {
+  return `<span class="heat" style="background:${css(col)};opacity:${(0.08 + 0.92 * v).toFixed(2)}" title="${Math.round(v * 100)}%"></span>`;
+}
+function mean(k, a, b) { const xs = (A.bars[k] || []).slice(a, b); return xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : 0; }
+
+function renderPhrases() {
+  const tb = $("phraseRows"); tb.innerHTML = "";
+  phrases.forEach((p, i) => {
+    const n = lenOf(i), tr = document.createElement("tr");
+    if (i === selected) tr.className = "sel";
+    const play = document.createElement("button"); play.textContent = "▶"; play.title = "Select and play from here";
+    play.onclick = () => { selected = i; renderPhrases(); gotoSec(barSec(p.bar)); if (!st.playing) start(barSec(p.bar)); };
+    const sel = document.createElement("select"); sel.title = "What this section is";
+    for (const l of A.labels) { const o = document.createElement("option"); o.value = l; o.textContent = l; sel.append(o); }
+    sel.value = p.label;
+    sel.onchange = () => { snapshot(); p.label = sel.value; changed(); };
+    const note = document.createElement("input"); note.type = "text"; note.value = p.note;
+    note.placeholder = "e.g. drums drop out, crowd sings, good to mix in";
+    note.oninput = () => { p.note = note.value; dirty = true; $("dirty").hidden = false; };
+    const stems = STEM_ROWS.map(([k, c]) => heat(mean(k, p.bar, p.bar + n), c)).join(" ");
+    const odd = n % 4 !== 0;
+    const cells = [
+      play, `${p.bar}–${p.bar + n - 1}`, `${4 * p.bar}–${4 * (p.bar + n) - 1}`,
+      `<span class="${odd ? "warn" : ""}" title="${odd ? "Not a multiple of 4 bars: check the boundaries" : ""}">${n} bars</span>`,
+      sel, stems, heat(mean("energy", p.bar, p.bar + n), "--energy"), note,
+    ];
+    for (const c of cells) {
+      const td = document.createElement("td");
+      if (typeof c === "string") td.innerHTML = c; else td.append(c);
+      tr.append(td);
+    }
+    tr.onclick = (e) => { if (e.target.tagName === "TD") { selected = i; renderPhrases(); } };
+    tb.append(tr);
+  });
+  $("summary").textContent = summaryText();
+}
+
+function summaryText() {
+  // The server's summary, refreshed on save; phrases here reflect unsaved edits too.
+  const s = { ...A.summary };
+  s.phrases = phrases.map((p, i) => {
+    const n = lenOf(i), r = (k) => Math.round(mean(k, p.bar, p.bar + n) * 100) / 100;
+    return { bars: `${p.bar}–${p.bar + n - 1}`, beats: `${4 * p.bar}–${4 * (p.bar + n) - 1}`, length_bars: n,
+             label: p.label, ...(p.note ? { note: p.note } : {}), energy: r("energy"),
+             vocals: r("vocals"), drums: r("drums"), bass: r("bass"), other: r("other") };
+  });
+  s.key = $("key").value; s.tags = $("tags").value.split(",").map((t) => t.trim()).filter(Boolean);
+  return JSON.stringify(s, null, 1);
+}
+
+function renderGrid() {
+  $("gridInfo").innerHTML = `<b>${A.bpm.toFixed(2)}</b> bpm · beat 0 at <b>${(A.anchor_sec * 1000).toFixed(0)}</b> ms · ${nBars()} bars`;
+  $("gridOk").innerHTML = A.grid_checked ? '<span class="ok">✓ checked</span>' : '<span class="keys">not checked yet</span>';
+  $("gridCheck").classList.toggle("on", A.grid_checked);
+}
+function renderKey() {
+  const conf = Math.round(A.key_confidence * 100);
+  $("keyInfo").innerHTML = `detected <b>${A.key_detected || "?"}</b> (${conf}% confident${conf < 40 ? " — check it" : ""})`;
+  $("keyOk").innerHTML = A.key_checked ? '<span class="ok">✓ checked</span>' : '<span class="keys">not checked yet</span>';
+  $("keyCheck").classList.toggle("on", A.key_checked);
+}
+
+function load(data, regridded) {
+  A = data;
+  phrases = A.phrases.map((p) => ({ bar: p.bar, label: p.label, note: p.note }));
+  selected = Math.min(selected, phrases.length - 1);
+  $("title").textContent = A.audio.split("/").pop();
+  document.title = `Annotate — ${$("title").textContent}`;
+  $("meta").textContent = `${A.bpm.toFixed(2)} bpm · ${nBars()} bars`;
+  if (!$("key").options.length) {
+    for (const k of A.keys) { const o = document.createElement("option"); o.value = k.key; o.textContent = `${k.key} (${k.camelot})`; $("key").append(o); }
+  }
+  $("key").value = A.key || A.key_detected;
+  $("tags").value = A.tags.join(", "); $("notes").value = A.notes;
+  if (regridded && buf) clickBuf = buildClickTrack();
+  ovBase.key = zm.key = ""; lastBeat = null;
+  renderGrid(); renderKey(); renderPhrases();
+}
+
+function frame() { if (buf) { updateReadout(); drawOverview(); drawZoom(); } requestAnimationFrame(frame); }
+
+// ---------------------------------------------------------------- wiring
+function wire() {
+  $("play").onclick = togglePlay;
+  for (const b of document.querySelectorAll("[data-seek]")) b.onclick = () => gotoBeat(currentBeat() + Number(b.dataset.seek));
+  const jumpP = (d) => { const i = Math.max(0, Math.min(phrases.length - 1, phraseAt(Math.floor(currentBeat() / 4)) + d));
+    selected = i; renderPhrases(); gotoSec(barSec(phrases[i].bar)); };
+  $("prevP").onclick = () => jumpP(-1); $("nextP").onclick = () => jumpP(1);
+  $("loopP").onclick = loopPhrase; $("click").onclick = toggleClick;
+  $("split").onclick = () => addStart(nearestBar(), null);
+  $("merge").onclick = mergeSelected; $("useSugg").onclick = resetToDetected; $("undo").onclick = undo;
+  $("save").onclick = save;
+  KEYS_FOR.forEach((l, i) => {
+    const b = document.createElement("button");
+    b.innerHTML = `<kbd>${i + 1}</kbd>${l}`; b.style.borderLeft = `4px solid ${LABEL_COLORS[l]}`;
+    b.title = `${l}: while playing, starts a phrase here; paused, labels the selected phrase`;
+    b.onclick = () => tapLabel(l);
+    $("labelBtns").append(b);
+  });
+  $("half").onclick = () => setGrid(A.bpm / 2, A.anchor_sec);
+  $("double").onclick = () => setGrid(A.bpm * 2, A.anchor_sec);
+  $("early").onclick = () => setGrid(A.bpm, A.anchor_sec - beatSec());
+  $("late").onclick = () => setGrid(A.bpm, A.anchor_sec + beatSec());
+  $("nudgeE").onclick = () => setGrid(A.bpm, A.anchor_sec - 0.01);
+  $("nudgeL").onclick = () => setGrid(A.bpm, A.anchor_sec + 0.01);
+  $("gridCheck").onclick = () => { A.grid_checked = !A.grid_checked; renderGrid(); dirty = true; $("dirty").hidden = false; };
+  $("keyCheck").onclick = () => { A.key_checked = !A.key_checked; renderKey(); dirty = true; $("dirty").hidden = false; };
+  $("key").onchange = () => { dirty = true; $("dirty").hidden = false; if (drone.length) setDrone(true); renderPhrases(); };
+  $("drone").onclick = () => setDrone(!drone.length);
+  for (const id of ["tags", "notes"]) $(id).oninput = () => { dirty = true; $("dirty").hidden = false; };
+
+  // Overview: phrase lane (select / drag a boundary) or jump.
+  const ov = $("overview");
+  const ovX = (e) => { const r = ov.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top, r.width]; };
+  const barAtX = (x, w) => Math.round(beatAt(x / w * A.duration_sec) / 4);
+  ov.addEventListener("pointerdown", (e) => {
+    const [x, y, w] = ovX(e);
+    if (y < OV.lane) {
+      const near = phrases.findIndex((p, i) => i > 0 && Math.abs(barSec(p.bar) / A.duration_sec * w - x) < 6);
+      if (near > 0) { snapshot(); dragB = { i: near }; ov.setPointerCapture(e.pointerId); return; }
+      selected = phraseAt(Math.floor(beatAt(x / w * A.duration_sec) / 4)); renderPhrases();
+      gotoSec(barSec(phrases[selected].bar));
+      return;
+    }
+    gotoBeat(4 * barAtX(x, w));
+  });
+  ov.addEventListener("pointermove", (e) => {
+    const [x, y, w] = ovX(e);
+    if (dragB) {
+      const i = dragB.i, lo = phrases[i - 1].bar + 1, hi = i + 1 < phrases.length ? phrases[i + 1].bar - 1 : nBars() - 1;
+      phrases[i].bar = Math.max(lo, Math.min(hi, barAtX(x, w)));
+      dragB.moved = true; renderPhrases();
+      return;
+    }
+    const near = y < OV.lane && phrases.some((p, i) => i > 0 && Math.abs(barSec(p.bar) / A.duration_sec * w - x) < 6);
+    ov.style.cursor = near ? "ew-resize" : "pointer";
+    const bar = Math.floor(beatAt(x / w * A.duration_sec) / 4), i = phraseAt(bar), p = phrases[i];
+    ov.title = y < OV.lane
+      ? (near ? "Drag to move this phrase boundary (snaps to bars)" : `${p.label} · bars ${p.bar}–${p.bar + lenOf(i) - 1} — click to select`)
+      : `bar ${bar} (beat ${4 * bar}) — click to jump here`;
+  });
+  ov.addEventListener("pointerup", () => { if (dragB) { if (dragB.moved) changed(); else history.pop(); dragB = null; } });
+  $("zoom").onclick = (e) => { const r = $("zoom").getBoundingClientRect();
+    gotoBeat(beatAt(zm.range[0] + (e.clientX - r.left) / r.width * (zm.range[1] - zm.range[0]))); };
+
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undo(); return; }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
+    const k = e.key, seeks = { ArrowLeft: -1, ArrowRight: 1, ArrowDown: -4, ArrowUp: 4 };
+    if (k === " ") togglePlay();
+    else if (k in seeks) gotoBeat(currentBeat() + seeks[k]);
+    else if (k >= "1" && k <= "9") tapLabel(KEYS_FOR[Number(k) - 1]);
+    else if (k === "s") addStart(nearestBar(), null);
+    else if (k === "Backspace" || k === "Delete") mergeSelected();
+    else if (k === "n") $("nextP").onclick();
+    else if (k === "p") $("prevP").onclick();
+    else if (k === "l") loopPhrase();
+    else if (k === "c") toggleClick();
+    else return;
+    e.preventDefault();
+  });
+  window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("resize", () => { ovBase.key = zm.key = ""; });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { ovBase.key = zm.key = ""; renderPhrases(); });
+}
+
+async function init() {
+  const data = await (await fetch("/annotation")).json();
+  load(data, false);
+  wire(); updateButtons();  // editing works while the audio decodes
+  $("status").textContent = "decoding audio…";
+  const bytes = await (await fetch("/audio")).arrayBuffer();
+  buf = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(bytes);
+  clickBuf = buildClickTrack();
+  st.offset = Math.max(0, secOf(0));
+  $("status").textContent = "";
+  requestAnimationFrame(frame);
+}
+init().catch((e) => { $("status").textContent = "Error: " + e.message; console.error(e); });
+</script>
+</body>
+</html>

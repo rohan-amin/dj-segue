@@ -202,6 +202,46 @@ def scrub(
 
 
 @app.command()
+def annotate(
+    audio_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    bpm: float | None = typer.Option(
+        None, "--bpm", help="For a new annotation: start from this tempo, not the detected one."
+    ),
+    folder: Path = typer.Option(
+        Path("annotations"), "--folder", help="Where annotations are saved (one JSON per track)."
+    ),
+    port: int = typer.Option(0, "--port", help="Port to serve on (default: any free port)."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open a browser."),
+) -> None:
+    """Annotate a track in the browser — grid, phrases, key, notes — for
+    planning transitions. Picks up where you left off if it was annotated before."""
+    from dj_segue.annotate import annotation_path, draft, file_sha1, load, save
+    from dj_segue.annotate.server import AnnotateSession, serve
+
+    out = annotation_path(audio_path, folder)
+    if out.exists():
+        if bpm is not None:
+            typer.echo("(--bpm only applies to a new annotation; change the grid on the page)")
+        ann = load(out)
+        if ann.audio_sha1 != file_sha1(audio_path):
+            typer.echo(f"{out} is for a different version of this file; starting a new draft "
+                       f"(the old one is kept as {out.name}.old)")
+            out.rename(out.with_name(out.name + ".old"))
+            ann = None
+    else:
+        ann = None
+    if ann is None:
+        typer.echo(f"analyzing {audio_path.name} (separating stems the first time: ~40 s) …")
+        try:
+            ann = draft(audio_path, str(audio_path), bpm=bpm)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=1)
+        save(ann, out)
+    serve(AnnotateSession(ann, audio_path, out), port, open_browser=not no_browser)
+
+
+@app.command()
 def tune(
     plan_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     audio_root: Path = typer.Option(

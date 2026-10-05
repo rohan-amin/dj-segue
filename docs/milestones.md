@@ -183,6 +183,16 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 ---
 
+## A1 — Annotations for planning  (STARTED 2026-10-04)
+
+**Goal:** Describe tracks well enough that transitions can be chosen from the descriptions: phrases (start bar, length, label, note), the key, tags, and per-bar stem activity, checked by a human.
+
+**Done 2026-10-04:** `dj-segue annotate` (a page on scrub's base): grid check, tap-to-phrase while listening, labels and notes, key with a drone check, tags; a draft from analysis (detected section starts, Krumhansl key, stem activity per bar from the separator); `annotations/<track>.json`; `summary()` is what a planner reads (phrases with energy and stems, no-vocal runs, breaks, key with Camelot).
+
+**Acceptance test:** With two tracks annotated (Crazy in Love, Pretty Girls Walk), a transition chosen from the two annotations alone sounds like one a DJ would use.
+
+---
+
 ## M6 — Word timing and the planner  (word timing next after R2, agreed 2026-10-04; planner DEFERRED 2026-09-29)
 
 **Goal:** Word-level timing for every track, then AI-generated plans from English.
