@@ -85,7 +85,7 @@
   </header>
 
   <div class="panel">
-    <div class="label"><span>Whole song — click to jump · the top lane is your phrases: click one to select it, drag a boundary to move it</span>
+    <div class="label"><span>Whole song — click to jump · the top lane is your phrases: click to select, drag a boundary to move it, double-click a boundary to remove it or a phrase to split it</span>
       <span class="legend">
         <span title="Overall loudness per bar"><i class="sw" style="background:var(--energy)"></i>energy</span>
         <span title="Low end (kick + bass) per bar"><i class="sw" style="background:var(--bass)"></i>low end</span>
@@ -122,13 +122,14 @@
     <div class="row labels" id="labelBtns" title="While it plays, press a number at each section start: a phrase starts on the nearest bar with that label. Paused: labels the selected phrase."></div>
     <div class="row">
       <button id="split" title="Start a new phrase at the nearest bar to what you're hearing (s)">Split here</button>
-      <button id="merge" title="Remove the selected phrase's start, merging it into the one before (⌫)">Merge into previous</button>
+      <button id="merge" title="Join the selected phrase to the one before it (⌫). While playing, the selected phrase is the one you're hearing.">Merge with previous</button>
+      <button id="mergeNext" title="Join the selected phrase to the one after it (⇧⌫)">Merge with next</button>
       <button id="useSugg" title="Replace all phrases with the detected section starts (keeps nothing)">Reset to detected</button>
       <button id="undo" title="Undo (⌘Z)" disabled>↶ Undo</button>
       <span class="keys">Tap <kbd>1</kbd>–<kbd>9</kbd> while playing to mark each section as it starts · faint ticks on the phrase lane are detected section starts</span>
     </div>
     <table style="margin-top:10px">
-      <thead><tr><th></th><th title="First bar – last bar">bars</th><th title="Beats, as a plan writes them">beats</th><th title="Phrases are usually 4, 8, 16 or 32 bars">length</th>
+      <thead><tr><th></th><th></th><th title="First bar – last bar">bars</th><th title="Beats, as a plan writes them">beats</th><th title="Phrases are usually 4, 8, 16 or 32 bars">length</th>
         <th>label</th><th title="What's playing on average (from the stems)">vocals · drums · bass · other</th><th>energy</th><th>note</th></tr></thead>
       <tbody id="phraseRows"></tbody>
     </table>
@@ -176,7 +177,7 @@
 
   <p class="keys">
     <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> beat · <kbd>↓</kbd><kbd>↑</kbd> bar · <kbd>n</kbd><kbd>p</kbd> phrase ·
-    <kbd>1</kbd>–<kbd>9</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge · <kbd>l</kbd> loop phrase ·
+    <kbd>1</kbd>–<kbd>9</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge with previous · <kbd>⇧⌫</kbd> merge with next · <kbd>l</kbd> loop phrase ·
     <kbd>c</kbd> click · <kbd>⌘S</kbd> save · <kbd>⌘Z</kbd> undo
   </p>
 </main>
@@ -327,9 +328,33 @@ function tapLabel(label) {
   if (st.playing) addStart(nearestBar(), label);
   else { snapshot(); phrases[selected].label = label; changed(); }
 }
-function mergeSelected() {
-  if (selected === 0) { toast("The first phrase starts the song; there's nothing before it to merge into."); return; }
-  snapshot(); phrases.splice(selected, 1); selected -= 1; changed();
+// Remove phrase i's start (i > 0), joining it to the phrase before. The
+// joined phrase keeps a real label over "?" (the earlier one if both are
+// labeled) and both notes.
+function removeBoundary(i) {
+  if (i <= 0 || i >= phrases.length) return;
+  snapshot();
+  const a = phrases[i - 1], b = phrases[i];
+  if (a.label === "?") a.label = b.label;
+  a.note = [a.note, b.note].filter(Boolean).join(" · ");
+  phrases.splice(i, 1);
+  selected = i - 1;
+  changed();
+}
+function mergePrev() {
+  if (selected === 0) { toast("This is the first phrase — nothing before it. Merge with the next one instead (⇧⌫)."); return; }
+  removeBoundary(selected);
+}
+function mergeNext() {
+  if (selected === phrases.length - 1) { toast("This is the last phrase — nothing after it. Merge with the previous one instead (⌫)."); return; }
+  removeBoundary(selected + 1);
+}
+// Select phrase i: re-highlights the table without rebuilding it (so a
+// note being typed keeps its focus).
+function select(i) {
+  if (i === selected) return;
+  selected = i;
+  [...$("phraseRows").children].forEach((tr, k) => tr.classList.toggle("sel", k === i));
 }
 function resetToDetected() {
   if (!confirm("Replace all phrases (and their labels and notes) with the detected section starts?")) return;
@@ -501,6 +526,7 @@ function updateReadout() {
   $("barNum").textContent = `bar ${Math.floor(whole / 4)}`;
   $("inBar").textContent = `beat ${inBar + 1}`;
   const bar = Math.floor(whole / 4), i = phraseAt(bar), p = phrases[i];
+  if (st.playing) select(i);  // while playing, the selection is what you hear
   $("where").textContent = `${p.label === "?" ? "unlabeled phrase" : p.label} · bar ${bar - p.bar + 1} of ${lenOf(i)}`;
 }
 function updateButtons() {
@@ -527,10 +553,14 @@ function renderPhrases() {
     const note = document.createElement("input"); note.type = "text"; note.value = p.note;
     note.placeholder = "e.g. drums drop out, crowd sings, good to mix in";
     note.oninput = () => { p.note = note.value; dirty = true; $("dirty").hidden = false; };
+    const up = document.createElement("button"); up.textContent = "⤒";
+    up.title = "Merge into the phrase above (removes this boundary)";
+    up.disabled = i === 0;
+    up.onclick = (e) => { e.stopPropagation(); removeBoundary(i); };
     const stems = STEM_ROWS.map(([k, c]) => heat(mean(k, p.bar, p.bar + n), c)).join(" ");
     const odd = n % 4 !== 0;
     const cells = [
-      play, `${p.bar}–${p.bar + n - 1}`, `${4 * p.bar}–${4 * (p.bar + n) - 1}`,
+      play, up, `${p.bar}–${p.bar + n - 1}`, `${4 * p.bar}–${4 * (p.bar + n) - 1}`,
       `<span class="${odd ? "warn" : ""}" title="${odd ? "Not a multiple of 4 bars: check the boundaries" : ""}">${n} bars</span>`,
       sel, stems, heat(mean("energy", p.bar, p.bar + n), "--energy"), note,
     ];
@@ -598,7 +628,8 @@ function wire() {
   $("prevP").onclick = () => jumpP(-1); $("nextP").onclick = () => jumpP(1);
   $("loopP").onclick = loopPhrase; $("click").onclick = toggleClick;
   $("split").onclick = () => addStart(nearestBar(), null);
-  $("merge").onclick = mergeSelected; $("useSugg").onclick = resetToDetected; $("undo").onclick = undo;
+  $("merge").onclick = mergePrev; $("mergeNext").onclick = mergeNext;
+  $("useSugg").onclick = resetToDetected; $("undo").onclick = undo;
   $("save").onclick = save;
   KEYS_FOR.forEach((l, i) => {
     const b = document.createElement("button");
@@ -646,10 +677,19 @@ function wire() {
     ov.style.cursor = near ? "ew-resize" : "pointer";
     const bar = Math.floor(beatAt(x / w * A.duration_sec) / 4), i = phraseAt(bar), p = phrases[i];
     ov.title = y < OV.lane
-      ? (near ? "Drag to move this phrase boundary (snaps to bars)" : `${p.label} · bars ${p.bar}–${p.bar + lenOf(i) - 1} — click to select`)
+      ? (near ? "Drag to move this boundary · double-click to remove it (merging the two phrases)"
+              : `${p.label} · bars ${p.bar}–${p.bar + lenOf(i) - 1} — click to select · double-click to split at this bar`)
       : `bar ${bar} (beat ${4 * bar}) — click to jump here`;
   });
   ov.addEventListener("pointerup", () => { if (dragB) { if (dragB.moved) changed(); else history.pop(); dragB = null; } });
+  ov.addEventListener("dblclick", (e) => {
+    const [x, y, w] = ovX(e);
+    if (y >= OV.lane) return;
+    const near = phrases.findIndex((p, i) => i > 0 && Math.abs(barSec(p.bar) / A.duration_sec * w - x) < 6);
+    if (near > 0) { removeBoundary(near); return; }
+    const bar = Math.max(0, Math.min(nBars() - 1, barAtX(x, w)));
+    if (bar > 0) addStart(bar, null);
+  });
   $("zoom").onclick = (e) => { const r = $("zoom").getBoundingClientRect();
     gotoBeat(beatAt(zm.range[0] + (e.clientX - r.left) / r.width * (zm.range[1] - zm.range[0]))); };
 
@@ -663,7 +703,7 @@ function wire() {
     else if (k in seeks) gotoBeat(currentBeat() + seeks[k]);
     else if (k >= "1" && k <= "9") tapLabel(KEYS_FOR[Number(k) - 1]);
     else if (k === "s") addStart(nearestBar(), null);
-    else if (k === "Backspace" || k === "Delete") mergeSelected();
+    else if (k === "Backspace" || k === "Delete") e.shiftKey ? mergeNext() : mergePrev();
     else if (k === "n") $("nextP").onclick();
     else if (k === "p") $("prevP").onclick();
     else if (k === "l") loopPhrase();
