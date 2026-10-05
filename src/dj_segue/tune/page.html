@@ -52,13 +52,34 @@
   .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
   .keys { color: var(--muted); font-size: 12px; }
   kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+  #dirty { color: var(--out); font-weight: 600; }
+  .stage { position: relative; }
+  #hint { position: absolute; pointer-events: none; z-index: 2; max-width: 320px; padding: 6px 9px;
+          background: var(--ink); color: var(--panel); border-radius: 6px; font-size: 12px; line-height: 1.35;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); }
+  #toast { position: absolute; top: 34px; left: 50%; transform: translateX(-50%); z-index: 3; max-width: 80%;
+           padding: 8px 12px; border-radius: 8px; background: var(--panel); color: var(--bad);
+           border: 1px solid var(--bad); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15); font-size: 13px; }
+  #busy { color: var(--muted); font-size: 12px; min-width: 70px; text-align: right; }
+  .help { margin: 8px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--btn); font-size: 13px; }
+  .help ul { margin: 0; padding-left: 18px; }
+  .help li { margin: 3px 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .legend i.line { height: 3px; vertical-align: 2px; }
+  #summary { margin: 0 0 8px; padding-left: 18px; }
+  #summary li { margin: 2px 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .grow { flex: 1; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1 id="title">Loading…</h1>
-    <select id="pick" aria-label="Transition"></select>
+    <select id="pick" aria-label="Transition" title="Which transition to edit"></select>
+    <span id="dirty" hidden title="Edits here aren't in the plan file until you press Save">● Unsaved changes</span>
     <span id="status"></span>
   </header>
 
@@ -68,24 +89,49 @@
   </div>
 
   <div class="panel">
-    <div class="label">
-      <span>Beats count from the transition's start. Drag a window's edges, or its middle to move it.
-        <button id="pencil" title="Draw a curve (D)">✎ Draw</button>
-        <span class="params" id="params"></span>
-        <select id="stemPick" aria-label="Lanes for" hidden></select></span>
-      <span class="keys"><kbd>Space</kbd> play/stop (the whole mix, on this computer's speakers; edits are heard as it plays) · click the ruler to set the cursor, or jump there while playing<br>
-        <kbd>Alt</kbd>-drag snaps to ¼ beat · 
-<kbd>D</kbd> draw: paint over a fade, <kbd>Shift</kbd> for a straight line · drawn curves: drag points, double-click to add or remove one<br>
-        lower strips (EQ / filter): click to add a keyframe, drag to move, double-click to remove</span>
+    <div class="toolbar">
+      <button id="pencil" title="Draw mode (D): paint over a fade to reshape its volume curve">✎ Draw</button>
+      <span class="meta">Strips below:</span>
+      <span class="params" id="params"></span>
+      <select id="stemPick" aria-label="Strips show" hidden
+              title="Edit the whole deck, or one stem of it (decks split into stems only)"></select>
+      <span class="grow"></span>
+      <span class="keys">Hover anything for help · beat 0 = where the transition starts</span>
+      <span id="busy"></span>
+      <button id="helpBtn" title="All shortcuts (?)">?</button>
     </div>
-    <canvas id="view"></canvas>
+    <div class="help" id="help" hidden>
+      <ul>
+        <li><kbd>Space</kbd> play / stop. Playback is the whole mix on this computer's speakers, and edits are heard about half a second after you make them.</li>
+        <li>Click the ruler (the beat numbers) to set where <b>▶ From cursor</b> starts, or to jump there while playing.</li>
+        <li>Drag a fade's edges to change where it starts or ends, or its middle to move it. Hold <kbd>Alt</kbd> to snap to ¼ beats.</li>
+        <li><kbd>←</kbd> <kbd>→</kbd> nudge the last handle or keyframe you touched by a beat (<kbd>Alt</kbd>: ¼ beat).</li>
+        <li><kbd>D</kbd> draw mode: paint over a fade to reshape its volume (<kbd>Shift</kbd> for a straight line). Drawn points: drag them; double-click to add or remove one.</li>
+        <li>Strips under the decks (bass, mids, highs, filter): click to add a keyframe, drag to move it, double-click to remove it.</li>
+        <li><kbd>⌘Z</kbd> undo · <kbd>⇧⌘Z</kbd> redo · nothing reaches the plan file until you press <b>Save</b>.</li>
+      </ul>
+    </div>
+    <div class="stage">
+      <canvas id="view"></canvas>
+      <div id="hint" hidden></div>
+      <div id="toast" hidden role="alert"></div>
+    </div>
+    <div class="legend">
+      <span><i style="background: var(--wave)"></i>the deck's audio</span>
+      <span><i style="background: var(--wave-on)"></i>what you hear of it (after EQ, filter, volume)</span>
+      <span><i class="line" style="background: var(--out)"></i>outgoing volume</span>
+      <span><i class="line" style="background: var(--in)"></i>incoming volume</span>
+      <span><i style="background: var(--win); border: 1px solid var(--line)"></i>the fade</span>
+      <span><i style="background: var(--nodeck); border: 1px solid var(--line)"></i>deck not playing</span>
+      <span><i class="line" style="background: var(--kf)"></i>EQ / filter / stem lane</span>
+    </div>
   </div>
 
   <div class="panel controls">
-    <button class="play" id="playBlend">▶ Blend</button>
-    <button id="playCursor">▶ From cursor</button>
-    <button id="stop">■ Stop</button>
-    <button id="loop">Loop blend</button>
+    <button class="play" id="playBlend" title="Play from 8 beats before the transition (Space plays from the cursor)">▶ Play blend</button>
+    <button id="playCursor" title="Play from the cursor (click the ruler to set it)">▶ From cursor</button>
+    <button id="stop" title="Stop (Space)">■ Stop</button>
+    <button id="loop" title="Repeat the transition, from 4 beats before to 4 after">Loop blend</button>
     <span id="pos" class="nums"></span>
   </div>
 
@@ -96,9 +142,14 @@
 
   <div class="panel">
     <div class="label"><span>Changes to save into the plan</span>
-      <span class="controls"><button id="revert">Revert</button><button id="save" class="play" disabled>Save</button></span>
+      <span class="controls">
+        <button id="undo" title="Undo (⌘Z)" disabled>↶ Undo</button>
+        <button id="redo" title="Redo (⇧⌘Z)" disabled>↷ Redo</button>
+        <button id="revert" title="Back to what's in the plan file">Revert</button>
+        <button id="save" class="play" disabled title="Write these changes into the plan file (comments and formatting are kept)">Save</button></span>
     </div>
-    <pre id="changes">(none)</pre>
+    <ul id="summary"><li>No changes yet.</li></ul>
+    <details><summary>Show the exact text that will be written</summary><pre id="changes">(none)</pre></details>
     <pre id="issues"></pre>
   </div>
 </main>
@@ -106,6 +157,13 @@
 <script>
 "use strict";
 const CURVES = [["equal_power", "Equal power"], ["linear", "Linear"], ["exponential", "Exponential"], ["drawn", "Drawn"]];
+const CURVE_TIPS = {
+  equal_power: "Equal power: loudness stays steady through the blend (the usual choice)",
+  linear: "Linear: a straight volume line; the blend dips a little in the middle",
+  exponential: "Exponential: changes slowly at first and quickly at the end (even in dB)",
+  drawn: "Drawn: your own shape (D to draw, or drag its points)",
+};
+const curveName = (c) => isDrawn(c) ? "drawn" : c === "step" ? "hard cut" : CURVES.find(([v]) => v === c)[1].toLowerCase();
 const MIN_GAP_SEC = 0.0021;   // drawn points stay ≥ 2 ms apart (the validator's rule)
 const SIMPLIFY_PX = 2.5;     // drop stroke points within this many pixels of the line
 const $ = (id) => document.getElementById(id);
@@ -119,8 +177,21 @@ let laneChanges = [];
 let param = "low";        // which lane the lower strips show
 let stemSel = "";         // "" = the whole deck, else a stem
 let vocalGains = null;
-const PARAMS = [["low", "Low"], ["mid", "Mid"], ["high", "High"], ["filter", "Filter"]];
-const STEM_PARAMS = [["vol", "Volume"], ["low", "Low"], ["mid", "Mid"], ["high", "High"]];
+const PARAMS = [["low", "Bass"], ["mid", "Mids"], ["high", "Highs"], ["filter", "Filter"]];
+const STEM_PARAMS = [["vol", "Volume"], ["low", "Bass"], ["mid", "Mids"], ["high", "Highs"]];
+const PARAM_TIPS = {
+  low: "Bass EQ (below 200 Hz): 0 dB is flat, −24 dB takes the bass out (a bass swap)",
+  mid: "Mids EQ (200 Hz – 2.5 kHz): vocals and most instruments",
+  high: "Highs EQ (above 2.5 kHz): hats, cymbals, air",
+  filter: "DJ filter: down = low-pass (muffled), up = high-pass (thin), middle = off",
+  vol: "This stem's volume",
+};
+// A strip's name: "Bass EQ", "drums Bass EQ", "vocals volume", "Filter".
+function paramName(key) {
+  const [p, stem] = key.split("@");
+  const name = p === "vol" ? "volume" : PARAMS.find(([q]) => q === p)[1] + (p === "filter" ? "" : " EQ");
+  return stem ? `${stem} ${name}` : name;
+}
 const kindOf = (p) => (p === "filter" ? "filter" : p === "vol" ? "vol" : "eq");
 const RANGE = { eq: [-24, 12], filter: [-1, 1], vol: [0, 1] };
 const NEUTRAL = { eq: 0, filter: 0, vol: 1 };
@@ -135,6 +206,9 @@ let changes = {};
 let live = null, looping = false, polling = false;
 let cursor = 0;           // seconds into the region
 let drag = null, previewSeq = 0;
+let selected = null;      // last handle / keyframe touched (arrow keys nudge it)
+let undoStack = [], redoStack = [];
+let dirty = false;
 let pencil = false;       // draw mode
 let stroke = null;        // {side, pts: [[t, g]…], shift, t0g0} while drawing
 
@@ -376,13 +450,21 @@ function drawLane(lane, deck, side) {
 
   // Handles.
   const handles = echoOut ? [win.start, state.echo.end] : win.start === win.end ? [win.start] : [win.start, win.end];
+  let selT = null;
+  if (selected && selected.kind === "edge" && selected.side === side) {
+    const e = selected.edge;
+    selT = e === "end" ? win.end : e === "tail" ? state.echo.end : e === "swap" ? null : win.start;
+  }
   for (const t of handles) {
     const x = xOf(t);
     ctx.fillStyle = color; ctx.fillRect(x - 1.5, lane.top, 3, lane.h);
     ctx.fillRect(x - 5, mid - 14, 10, 28);
+    if (selT !== null && Math.abs(t - selT) < 1e-9) {
+      ctx.strokeStyle = css("--ink"); ctx.lineWidth = 2; ctx.strokeRect(x - 6.5, mid - 15.5, 13, 31);
+    }
   }
-  const what = echoOut ? "Echo out" : side === "out" ? "Out" : "In";
-  label(`${what} · ${deck.label}`, lane.top + 3, 12);
+  const what = echoOut ? "echoes out" : side === "out" ? "fades out" : isEcho() ? "comes in" : "fades in";
+  label(`${deck.label} ${what}`, lane.top + 3, 12);
 }
 
 // -- automation strips (EQ / filter) ----------------------------------------
@@ -405,10 +487,10 @@ function valueAt(kfs, t) {
   return kfs[kfs.length - 1][1];
 }
 
-function fmtVal(v) {
-  if (param === "vol") return `${Math.round(v * 100)}%`;
-  return param === "filter"
-    ? (v === 0 ? "off" : `${v < 0 ? "LP" : "HP"} ${Math.abs(v).toFixed(2)}`)
+function fmtVal(v, p = param) {
+  if (p === "vol") return `${Math.round(v * 100)}%`;
+  return p === "filter"
+    ? (v === 0 ? "off" : `${v < 0 ? "low-pass" : "high-pass"} ${Math.round(Math.abs(v) * 100)}%`)
     : `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
 }
 
@@ -416,10 +498,18 @@ function drawStrip(s) {
   const w = canvas.clientWidth, kfs = laneKfs(s.deck);
   ctx.fillStyle = css("--btn"); ctx.fillRect(0, s.top, w, s.h);
   if (kfs === undefined) {
-    label(`${stemSel} · ${s.deck.label} · not mixed by stems (add a stem lane in the plan and reopen)`,
+    label(`${stemSel} · ${s.deck.label} · not split into stems in this session (hover for how)`,
       s.top + 2, 11);
     return;
   }
+  // Scale: top, neutral, bottom.
+  ctx.font = "10px -apple-system, sans-serif"; ctx.textAlign = "right"; ctx.fillStyle = css("--muted");
+  const kind = kindOf(param), short = { eq: ["+12", "0 dB", "−24"], filter: ["high-pass", "off", "low-pass"],
+    vol: ["100%", "", "0%"] }[kind];
+  const yMid = yOfV(s, neutral());
+  if (short[1]) { ctx.textBaseline = "bottom"; ctx.fillText(short[1], w - 4, yMid - 1); }
+  if (!short[1] || yMid - s.top > 24) { ctx.textBaseline = "top"; ctx.fillText(short[0], w - 4, s.top + 2); }
+  ctx.textBaseline = "bottom"; ctx.fillText(short[2], w - 4, Math.min(s.top + s.h, canvas.clientHeight) - 1);
   ctx.fillStyle = css("--line"); ctx.fillRect(0, Math.round(yOfV(s, neutral())), w, 1);
   ctx.strokeStyle = css("--kf"); ctx.lineWidth = 2; ctx.globalAlpha = kfs ? 1 : 0.35;
   ctx.beginPath();
@@ -430,11 +520,12 @@ function drawStrip(s) {
   ctx.stroke(); ctx.globalAlpha = 1;
   for (const [t] of kfs || []) {
     if (t < item.start_sec || t > item.end_sec) continue;
-    ctx.beginPath(); ctx.arc(xOf(t), yOfV(s, valueAt(kfs, t)), 4.5, 0, 2 * Math.PI);
-    ctx.fillStyle = css("--panel"); ctx.fill(); ctx.strokeStyle = css("--kf"); ctx.lineWidth = 2; ctx.stroke();
+    const sel = selected && selected.kind === "kf" && selected.deck === s.deck.deck &&
+      selected.key === laneKey() && Math.abs(selected.t - t) < 1e-6;
+    ctx.beginPath(); ctx.arc(xOf(t), yOfV(s, valueAt(kfs, t)), sel ? 5.5 : 4.5, 0, 2 * Math.PI);
+    ctx.fillStyle = css(sel ? "--kf" : "--panel"); ctx.fill(); ctx.strokeStyle = css("--kf"); ctx.lineWidth = 2; ctx.stroke();
   }
-  const name = (stemSel ? STEM_PARAMS : PARAMS).find(([p]) => p === param)[1];
-  let text = `${stemSel ? stemSel + " " : ""}${name} · ${s.deck.label}`;
+  let text = `${paramName(laneKey())} · ${s.deck.label}`;
   const hover = drag && drag.kind === "kf" && drag.deck === s.deck.deck ? kfs[drag.i] : null;
   if (hover) text += ` · ${fmtVal(hover[1])}`;
   else if (!kfs) text += " · click to add a keyframe";
@@ -477,6 +568,7 @@ function renderStemPick() {
   el.innerHTML = "";
   for (const v of ["", ...stems]) {
     const o = document.createElement("option"); o.value = v; o.textContent = v ? `${v} stem` : "Whole deck";
+    o.title = v ? `The strips edit the ${v} stem's volume and EQ` : "The strips edit the whole deck";
     el.append(o);
   }
   if (!stems.includes(stemSel)) stemSel = "";
@@ -489,6 +581,7 @@ function renderParams() {
   if (!list.some(([p]) => p === param)) param = list[0][0];
   for (const [p, label] of list) {
     const b = document.createElement("button"); b.textContent = label;
+    b.title = PARAM_TIPS[p];
     b.classList.toggle("on", p === param);
     b.onclick = () => { param = p; renderParams(); draw(); };
     el.append(b);
@@ -503,9 +596,10 @@ function renderSides() {
     const row = document.createElement("div"); row.className = "row";
     const name = document.createElement("span"); name.textContent = "Vocals";
     const t = document.createElement("span"); t.className = "nums";
-    t.innerHTML = `swap at beat <b></b> (dashed line; drag the marker)`;
+    t.innerHTML = `swap at beat <b></b> · drag the purple marker (the dashed line is the vocals' volume)`;
     t.querySelector("b").textContent = fmtBeat(state.swap);
     const half = document.createElement("button"); half.textContent = "Halfway";
+    half.title = "Put the vocal swap halfway through the instrumentals' fade";
     half.onclick = () => { state.swap = (state.out.start + state.out.end) / 2; requestPreview(); };
     row.append(name, t, half);
     $("side-out").append(row);
@@ -521,6 +615,9 @@ function renderFadeSides() {
     const sw = document.createElement("i"); sw.style.background = css(side === "out" ? "--out" : "--in");
     const fade = side === "out" ? "out" : "in";
     h2.append(sw, `${isHandoff() ? `Instrumentals ${fade}` : `Fade ${fade}`} — ${deck.label}`);
+    h2.title = isHandoff()
+      ? `${deck.label}'s drums, bass and other stems fade ${fade} here; its vocals switch at the swap`
+      : `${deck.label}'s volume fades ${fade} over this window`;
     const nums = document.createElement("div"); nums.className = "nums";
     const len = beatsBetween(win.start, win.end);
     nums.innerHTML = `beat <b></b> → <b></b> · <b></b> beats`;
@@ -529,8 +626,9 @@ function renderFadeSides() {
     const sel = document.createElement("select");
     sel.setAttribute("aria-label", `${side} curve`);
     for (const [v, label] of CURVES) {
-      const o = document.createElement("option"); o.value = v; o.textContent = label; sel.append(o);
+      const o = document.createElement("option"); o.value = v; o.textContent = label; o.title = CURVE_TIPS[v]; sel.append(o);
     }
+    sel.title = CURVE_TIPS[isDrawn(win.curve) ? "drawn" : win.curve] || "The shape of the volume change";
     sel.value = isDrawn(win.curve) ? "drawn" : win.curve;
     sel.onchange = () => {
       if (sel.value === "drawn") setDrawn(side, asPoints(side));  // starts as the current shape
@@ -544,6 +642,7 @@ function renderFadeSides() {
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!win.curve.smooth;
       cb.onchange = () => { state[side].curve = { ...state[side].curve, smooth: cb.checked }; requestPreview(); };
       lab.append(cb, " Smooth");
+      lab.title = "Smooth: a gentle curve through the points (never overshooting them); off: straight lines";
       const n = document.createElement("span"); n.className = "nums";
       n.textContent = ` · ${win.curve.points.length} points`;
       el.append(lab, n);
@@ -551,8 +650,9 @@ function renderFadeSides() {
   }
 }
 
-function slider(label, value, step, onset, fmt) {
+function slider(label, value, step, onset, fmt, tip = "") {
   const row = document.createElement("div"); row.className = "row";
+  row.title = tip;
   const name = document.createElement("span"); name.textContent = label;
   const r = document.createElement("input"); r.type = "range"; r.min = 0; r.max = 1; r.step = step; r.value = value;
   r.setAttribute("aria-label", label);
@@ -573,12 +673,14 @@ function renderEchoSides() {
   };
   const tail = beatsBetween(state.out.start, e.end);
   const nums = document.createElement("div"); nums.className = "nums";
-  nums.innerHTML = `cut at beat <b></b> · tail <b></b> beats`;
+  nums.innerHTML = `cut at beat <b></b> · echoes for <b></b> beats`;
+  nums.title = "The dry sound stops at the cut; its last beat (or whatever 'Repeat every' is) repeats and fades over the tail";
   nums.querySelectorAll("b")[0].textContent = fmtBeat(state.out.start);
   nums.querySelectorAll("b")[1].textContent = String(tail);
 
   const every = document.createElement("div"); every.className = "row";
-  const lab = document.createElement("span"); lab.textContent = "Every";
+  const lab = document.createElement("span"); lab.textContent = "Repeat every";
+  every.title = "How much of the end gets repeated, and how often (on the beat grid)";
   const sel = document.createElement("select"); sel.setAttribute("aria-label", "echo every");
   for (const b of EVERY) {
     if (b > tail + 1e-6) continue;
@@ -592,16 +694,18 @@ function renderEchoSides() {
   outEl.append(
     head("out", `Echo out — ${item.decks[0].label}`), nums, every,
     slider("Feedback", e.feedback, 0.05, (v) => { state.echo.feedback = v; requestPreview(); },
-      (v) => `${Math.round(v * 100)}% per repeat`),
-    slider("High-pass", e.highpass, 0.05, (v) => { state.echo.highpass = v; requestPreview(); },
-      (v) => (v ? `sweeps to ${v.toFixed(2)}` : "off")),
+      (v) => `each repeat ${Math.round(v * 100)}% of the last`,
+      "How loud each repeat is compared with the one before"),
+    slider("Thin out", e.highpass, 0.05, (v) => { state.echo.highpass = v; requestPreview(); },
+      (v) => (v ? `high-pass sweeps to ${Math.round(v * 100)}%` : "off"),
+      "A high-pass filter sweeping up over the tail, so the echoes lose their bass as they fade"),
   );
 
   const win = state.in;
   inEl.append(head("in", `Comes in — ${item.decks[1].label}`));
   const n2 = document.createElement("div"); n2.className = "nums";
   if (win.end - win.start < 1e-6) {
-    n2.textContent = `hard, at beat ${fmtBeat(win.start)} · drag its handle to fade in`;
+    n2.textContent = `cuts in at beat ${fmtBeat(win.start)} · drag its handle to fade in instead`;
     inEl.append(n2);
     return;
   }
@@ -611,48 +715,57 @@ function renderEchoSides() {
   bs[0].textContent = fmtBeat(win.start); bs[1].textContent = fmtBeat(win.end); bs[2].textContent = String(len);
   const csel = document.createElement("select"); csel.setAttribute("aria-label", "in curve");
   for (const [v, label] of CURVES) {
-    const o = document.createElement("option"); o.value = v; o.textContent = label; csel.append(o);
+    const o = document.createElement("option"); o.value = v; o.textContent = label; o.title = CURVE_TIPS[v]; csel.append(o);
   }
+  csel.title = CURVE_TIPS[isDrawn(win.curve) ? "drawn" : win.curve] || "";
   csel.value = isDrawn(win.curve) ? "drawn" : win.curve === "step" ? "equal_power" : win.curve;
   csel.onchange = () => {
     if (csel.value === "drawn") setDrawn("in", asPoints("in"));
     else state.in.curve = csel.value;
     requestPreview();
   };
-  const hard = document.createElement("button"); hard.textContent = "Make it hard";
+  const hard = document.createElement("button"); hard.textContent = "Cut in (no fade)";
+  hard.title = "Bring it in at full volume right on the cut";
   hard.onclick = () => { state.in.start = state.in.end = state.out.start; state.in.curve = "step"; requestPreview(); };
   inEl.append(n2, csel, " ", hard);
 }
 
 // -- server -----------------------------------------------------------------
 async function loadItem(index) {
-  $("status").textContent = "loading…";
+  setStatus("loading…");
   item = await (await fetch(`/item/${index}`)).json();
   state = structuredClone(item.state);
   good = structuredClone(state);
+  undoStack = []; redoStack = []; selected = null;
   renderStemPick(); renderParams();
   cursor = Math.max(0, plusBeats(blendStart(), -8) - item.start_sec);
   await requestPreview();
 }
 
-async function requestPreview() {
+async function requestPreview(opts = {}) {
   const seq = ++previewSeq;
   renderSides(); draw();
-  $("status").textContent = "updating…";
+  setStatus("updating…");
   const res = await (await fetch("/preview", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ index: item.index, state }),
   })).json();
   if (seq !== previewSeq) return;
   if (!res.ok) {
-    $("issues").textContent = res.issues.join("\n");
+    $("issues").textContent = "Not applied:\n" + res.issues.map((i) => "• " + i).join("\n");
+    toast(res.issues[0] + (res.issues.length > 1 ? ` (and ${res.issues.length - 1} more, below)` : ""));
     state = structuredClone(good);
     renderSides(); draw();
-    $("status").textContent = "";
+    setStatus("");
     return;
   }
   $("issues").textContent = "";
+  $("toast").hidden = true;
+  if (!opts.history && JSON.stringify(good) !== JSON.stringify(state)) {
+    undoStack.push(good); redoStack = [];
+  }
   good = structuredClone(state);
+  $("undo").disabled = !undoStack.length; $("redo").disabled = !redoStack.length;
   gains = res.gains; gainRate = res.gain_rate;
   peaksOn = res.peaks; tailPeaks = res.tail_peaks; vocalGains = res.vocal_gains;
   changes = res.changes; laneChanges = res.lane_changes || [];
@@ -663,23 +776,88 @@ async function requestPreview() {
     lines.push(`plan "${k}": ${JSON.stringify(v)}  (this edit needs it)`);
   }
   $("changes").textContent = lines.length ? lines.join("\n") : "(none)";
-  $("save").disabled = keys.length === 0 && laneChanges.length === 0;
+  dirty = keys.length > 0 || laneChanges.length > 0;
+  $("save").disabled = !dirty;
+  $("dirty").hidden = !dirty;
+  renderSummary(res.plan_changes || {});
   // The server is already playing the edit (if playing); the loop follows the blend.
   if (looping) sendLoop();
-  $("status").textContent = "";
+  setStatus("");
   draw();
 }
 
+// The changes, in words (the exact text is under "Show the exact text").
+function renderSummary(planChanges) {
+  const o = item.state, c = state, out = [];
+  const span = (w) => w.start === w.end ? `a cut at beat ${fmtBeat(w.start)}`
+    : `beat ${fmtBeat(w.start)} → ${fmtBeat(w.end)} (${beatsLong(w.start, w.end)})`;
+  const sideName = (side) => {
+    const d = deckOf(side).label;
+    if (isEcho()) return side === "out" ? `${d}'s echo out` : `${d} coming in`;
+    return isHandoff() ? `${d}'s instrumentals fading ${side}` : `${d} fading ${side}`;
+  };
+  for (const side of isEcho() ? ["in"] : ["out", "in"]) {
+    const a = o[side], b = c[side];
+    if (a.start !== b.start || a.end !== b.end) out.push(`${sideName(side)}: now ${span(b)} (was ${span(a)})`);
+    if (JSON.stringify(a.curve) !== JSON.stringify(b.curve) && b.end > b.start && a.end > a.start) {
+      out.push(`${sideName(side)}: ${curveName(b.curve)} curve (was ${curveName(a.curve)})`);
+    }
+  }
+  if (isEcho()) {
+    const a = o.echo, b = c.echo;
+    const pct = (v) => `${Math.round((v || 0) * 100)}%`;
+    if (o.out.start !== c.out.start) out.push(`Echo cut: now at beat ${fmtBeat(c.out.start)} (was ${fmtBeat(o.out.start)})`);
+    if (beatsBetween(o.out.start, a.end) !== beatsBetween(c.out.start, b.end)) {
+      out.push(`Echoes last ${beatsLong(c.out.start, b.end)} (was ${beatsLong(o.out.start, a.end)})`);
+    }
+    if (a.every !== b.every) out.push(`Repeat every ${b.every} beats (was ${a.every})`);
+    if (a.feedback !== b.feedback) out.push(`Feedback ${pct(b.feedback)} (was ${pct(a.feedback)})`);
+    if ((a.highpass || 0) !== (b.highpass || 0)) out.push(`Thin out ${pct(b.highpass)} (was ${pct(a.highpass)})`);
+  }
+  if (isHandoff() && o.swap !== c.swap) out.push(`Vocal swap: now at beat ${fmtBeat(c.swap)} (was ${fmtBeat(o.swap)})`);
+  for (const [deckKey, params] of Object.entries(c.lanes || {})) {
+    const deck = item.decks.find((d) => String(d.deck) === deckKey);
+    for (const [key, kfs] of Object.entries(params)) {
+      const before = (o.lanes[deckKey] || {})[key];
+      if (JSON.stringify(before) === JSON.stringify(kfs)) continue;
+      const n = kfs ? kfs.length : 0, k = `${n} keyframe${n === 1 ? "" : "s"}`;
+      out.push(before ? `${paramName(key)} on ${deck.label}: keyframes changed (${k})`
+                      : `New ${paramName(key)} lane on ${deck.label} (${k})`);
+    }
+  }
+  for (const [k, v] of Object.entries(planChanges)) {
+    if (k === "schema_version") out.push(`The plan's schema version goes up to ${v} (this edit needs it)`);
+  }
+  const el = $("summary"); el.innerHTML = "";
+  for (const line of out.length ? out : ["No changes yet."]) {
+    const li = document.createElement("li"); li.textContent = line; el.append(li);
+  }
+}
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(structuredClone(good));
+  state = undoStack.pop();
+  requestPreview({ history: true });
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(structuredClone(good));
+  state = redoStack.pop();
+  requestPreview({ history: true });
+}
+
 async function save() {
-  $("status").textContent = "saving…";
+  setStatus("saving…");
   const res = await (await fetch("/save", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ index: item.index, state }),
   })).json();
-  if (!res.ok) { $("issues").textContent = res.issues.join("\n"); $("status").textContent = ""; return; }
-  $("status").textContent = res.saved ? "saved ✓" : "nothing to save";
+  if (!res.ok) { $("issues").textContent = res.issues.join("\n"); toast(res.issues[0]); setStatus(""); return; }
+  setStatus(res.saved ? "saved ✓" : "nothing to save");
   await loadItem(item.index);
-  $("status").textContent = res.saved ? "saved ✓" : "nothing to save";
+  setStatus(res.saved ? "saved ✓" : "nothing to save");
 }
 
 // -- playback ---------------------------------------------------------------
@@ -721,8 +899,8 @@ function play(from) {
     const [a, b] = loopRegion();
     if (at < a || at >= b) at = a;
   }
-  $("status").textContent = live ? "" : "starting…";
-  liveCall("/live/play", { at }).then(() => { $("status").textContent = ""; });
+  setStatus(live ? "" : "starting…");
+  liveCall("/live/play", { at }).then(() => setStatus(""));
 }
 
 const stop = () => liveCall("/live/stop");
@@ -808,6 +986,7 @@ canvas.addEventListener("pointerdown", (e) => {
     }
     canvas.setPointerCapture(e.pointerId);
     drag = { kind: "kf", deck: s.deck.deck, strip: s, i, moved: true };
+    selected = { kind: "kf", deck: s.deck.deck, key: laneKey(), t: kfs[i][0] };
     draw();
     return;
   }
@@ -821,10 +1000,10 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
   const h = hit(x, y);
-  if (!h) return;
+  if (!h) { selected = null; draw(); return; }
   canvas.setPointerCapture(e.pointerId);
-  drag = { ...h, x0: x, win0: structuredClone(state[h.side]), swap0: state.swap,
-           in0: structuredClone(state.in), echo0: isEcho() ? structuredClone(state.echo) : null };
+  drag = { ...h, x0: x, ...snapshot(h.side) };
+  if (h.edge !== "point") selected = { kind: "edge", side: h.side, edge: h.edge };
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -845,6 +1024,7 @@ canvas.addEventListener("pointermove", (e) => {
     const h = item && !pencil && hit(x, y);
     canvas.style.cursor = y < RULER ? "pointer" : item && stripAt(y) ? "copy" : pencil ? "crosshair"
       : h ? (h.edge === "point" ? "move" : h.edge === "move" ? "grab" : "ew-resize") : "default";
+    showHint(x, y, describeAt(x, y));
     return;
   }
   if (drag.kind === "kf") {
@@ -853,6 +1033,8 @@ canvas.addEventListener("pointermove", (e) => {
     const lo = i > 0 ? kfs[i - 1][0] + 1e-3 : -Infinity, hi = i < kfs.length - 1 ? kfs[i + 1][0] - 1e-3 : Infinity;
     t = Math.max(lo, Math.min(hi, t));
     kfs[i] = [t, snapValue(vOfY(drag.strip, y)), kfs[i][2]];
+    selected = { kind: "kf", deck: drag.deck, key: laneKey(), t };
+    showHint(x, y, `${paramName(laneKey())}: ${fmtVal(kfs[i][1])} at beat ${fmtBeat(t)}`);
     draw();
     return;
   }
@@ -863,39 +1045,147 @@ canvas.addEventListener("pointermove", (e) => {
     const u = Math.max(pts[i - 1][0] + minGap, Math.min(pts[i + 1][0] - minGap, winT(drag.side, tOf(x))));
     pts[i] = [u, gOfY(laneOf(drag.side), y)];
     drag.moved = true;
+    showHint(x, y, `Volume ${Math.round(pts[i][1] * 100)}% at beat ${fmtBeat(winSec(drag.side, u))}`);
     draw();
     return;
   }
-  const snap = (t) => snapBeat(t, e.altKey), q = e.altKey ? 0.25 : 1;
-  // Moving keeps lengths in beats (through a tempo change, not seconds).
-  const shift = (t, from, to) => plusBeats(t, beatOf(to) - beatOf(from));
-  const dt = (x - drag.x0) / canvas.clientWidth * dur(), w0 = drag.win0;
+  const dt = (x - drag.x0) / canvas.clientWidth * dur();
   if (drag.edge === "zero" && Math.abs(x - drag.x0) > 3) drag.edge = dt < 0 ? "start" : "end";
   if (drag.edge === "zero") return;
-  if (drag.edge === "swap") {
-    state.swap = Math.max(state.out.start, Math.min(state.out.end, snap(drag.swap0 + dt)));
-    renderSides(); draw();
-    return;
-  }
-  if (drag.edge === "cut") {
-    // The cut carries the tail and the incoming fade with it.
-    const c = snap(w0.start + dt);
-    win.start = win.end = c;
-    state.echo.end = shift(drag.echo0.end, w0.start, c);
-    state.in.start = shift(drag.in0.start, w0.start, c); state.in.end = shift(drag.in0.end, w0.start, c);
-  } else if (drag.edge === "tail") {
-    state.echo.end = Math.max(snap(drag.echo0.end + dt), plusBeats(win.start, q));
-  } else if (drag.edge === "move") {
-    const s = snap(w0.start + dt); win.start = s; win.end = shift(w0.end, w0.start, s);
-    if (isHandoff() && drag.side === "out") state.swap = shift(drag.swap0, w0.start, s);
-  } else if (drag.edge === "start") {
-    win.start = Math.min(snap(w0.start + dt), plusBeats(win.end, -q));
-  } else {
-    win.end = Math.max(snap(w0.end + dt), plusBeats(win.start, q));
-  }
-  if (isEcho() && drag.side === "in" && win.curve === "step" && win.end > win.start) win.curve = "equal_power";
+  selected = { kind: "edge", side: drag.side, edge: drag.edge };
+  applyEdge(drag.side, drag.edge, drag, snapBeat(edgeAnchor(drag.edge, drag) + dt, e.altKey), e.altKey ? 0.25 : 1);
+  showHint(x, y, describeEdge(drag.side, drag.edge));
   renderSides(); draw();
 });
+
+// What a handle (edge) is anchored on, in a snapshot {win0, swap0, in0, echo0}.
+function edgeAnchor(edge, snap0) {
+  if (edge === "end") return snap0.win0.end;
+  if (edge === "tail") return snap0.echo0.end;
+  if (edge === "swap") return snap0.swap0;
+  return snap0.win0.start;  // start, move, cut
+}
+
+function snapshot(side) {
+  return { win0: structuredClone(state[side]), swap0: state.swap, in0: structuredClone(state.in),
+           echo0: isEcho() ? structuredClone(state.echo) : null };
+}
+
+// Move one handle so its anchor lands on mix second `target` (dragging, or
+// the arrow keys). `q`: the shortest window, in beats.
+function applyEdge(side, edge, snap0, target, q) {
+  const win = state[side], w0 = snap0.win0;
+  // Moving keeps lengths in beats (through a tempo change, not seconds).
+  const shift = (t, from, to) => plusBeats(t, beatOf(to) - beatOf(from));
+  if (edge === "swap") {
+    state.swap = Math.max(state.out.start, Math.min(state.out.end, target));
+  } else if (edge === "cut") {
+    // The cut carries the tail and the incoming fade with it.
+    win.start = win.end = target;
+    state.echo.end = shift(snap0.echo0.end, w0.start, target);
+    state.in.start = shift(snap0.in0.start, w0.start, target);
+    state.in.end = shift(snap0.in0.end, w0.start, target);
+  } else if (edge === "tail") {
+    state.echo.end = Math.max(target, plusBeats(win.start, q));
+  } else if (edge === "move") {
+    win.start = target; win.end = shift(w0.end, w0.start, target);
+    if (isHandoff() && side === "out") state.swap = shift(snap0.swap0, w0.start, target);
+  } else if (edge === "start") {
+    win.start = Math.min(target, plusBeats(win.end, -q));
+  } else {
+    win.end = Math.max(target, plusBeats(win.start, q));
+  }
+  if (isEcho() && side === "in" && win.curve === "step" && win.end > win.start) win.curve = "equal_power";
+}
+
+// Arrow keys: nudge the selected handle or keyframe by a beat (¼ with Alt).
+function nudge(dir, quarter) {
+  if (!selected || !item) return;
+  const q = quarter ? 0.25 : 1;
+  if (selected.kind === "kf") {
+    const kfs = (state.lanes[String(selected.deck)] || {})[selected.key];
+    const i = kfs ? kfs.findIndex(([t]) => Math.abs(t - selected.t) < 1e-6) : -1;
+    if (i < 0) return;
+    const lo = i > 0 ? kfs[i - 1][0] + 1e-3 : -Infinity, hi = i < kfs.length - 1 ? kfs[i + 1][0] - 1e-3 : Infinity;
+    const t = Math.max(lo, Math.min(hi, snapBeat(plusBeats(kfs[i][0], dir * q), quarter)));
+    kfs[i] = [t, kfs[i][1], kfs[i][2]];
+    selected.t = t;
+  } else {
+    let edge = selected.edge;
+    if (edge === "zero") edge = selected.edge = dir < 0 ? "start" : "end";
+    const snap0 = snapshot(selected.side);
+    applyEdge(selected.side, edge, snap0, snapBeat(plusBeats(edgeAnchor(edge, snap0), dir * q), quarter), q);
+  }
+  requestPreview();
+}
+
+// -- hover hints ------------------------------------------------------------
+function showHint(x, y, text) {
+  const el = $("hint");
+  if (!text) { el.hidden = true; return; }
+  el.textContent = text; el.hidden = false;
+  const w = canvas.clientWidth, bw = el.offsetWidth, bh = el.offsetHeight;
+  el.style.left = `${Math.max(0, Math.min(w - bw, x + 14))}px`;
+  el.style.top = `${y + 18 + bh > canvas.clientHeight ? y - bh - 10 : y + 18}px`;
+}
+
+const beatsLong = (a, b) => { const n = beatsBetween(a, b); return `${n} beat${n === 1 ? "" : "s"}`; };
+
+function describeEdge(side, edge) {
+  const win = state[side], name = deckOf(side).label;
+  const fade = isHandoff() ? `${name}'s instrumentals fade ${side}` : `Fade-${side} (${name})`;
+  const alt = "Alt: snap to ¼ beat · ←/→ nudge";
+  switch (edge) {
+    case "start": return `${fade} starts at beat ${fmtBeat(win.start)}. Drag to change. ${alt}`;
+    case "end": return `${fade} ends at beat ${fmtBeat(win.end)}. Drag to change. ${alt}`;
+    case "move": return `${fade}: beat ${fmtBeat(win.start)} → ${fmtBeat(win.end)} (${beatsLong(win.start, win.end)}). Drag to move it; double-click to add a curve point.`;
+    case "zero": return `${name} cuts in at beat ${fmtBeat(win.start)}. Drag sideways to turn it into a fade.`;
+    case "cut": return `Echo cut at beat ${fmtBeat(win.start)}: ${name} stops here and echoes. Drag to move it (the tail and the incoming deck follow). ${alt}`;
+    case "tail": return `The echoes fade out by beat ${fmtBeat(state.echo.end)} (${beatsLong(win.start, state.echo.end)} after the cut). Drag to lengthen or shorten. ${alt}`;
+    case "swap": return `Vocals swap at beat ${fmtBeat(state.swap)}: ${item.decks[0].label}'s stop, ${item.decks[1].label}'s start. Drag to move. ${alt}`;
+    case "point": return "A point of your drawn curve. Drag it; double-click to remove it.";
+  }
+  return null;
+}
+
+function describeAt(x, y) {
+  if (!item) return null;
+  const t = tOf(x);
+  if (y < RULER) {
+    return `Beat ${fmtBeat(t)}. Click to ${live ? "jump here" : "set the play cursor here"}.`;
+  }
+  const s = stripAt(y);
+  if (s) {
+    const kfs = laneKfs(s.deck), name = paramName(laneKey());
+    if (kfs === undefined) {
+      return `${s.deck.label} isn't split into stems in this session. To edit its stems, add a stem lane for it to the plan (e.g. a stem_volume lane) and reopen tune.`;
+    }
+    const i = hitKf(s, x, y);
+    if (i >= 0) return `${name} on ${s.deck.label}: ${fmtVal(kfs[i][1])} at beat ${fmtBeat(kfs[i][0])}. Drag to move; double-click to remove; ←/→ nudge.`;
+    const at = snapBeat(t, false);
+    return `${name} on ${s.deck.label}${kfs ? ` (now ${fmtVal(valueAt(kfs, t))})` : " (not used yet)"}. Click to add a keyframe at beat ${fmtBeat(at)}: ${fmtVal(snapValue(vOfY(s, y)))}.`;
+  }
+  const side = sideAt(y);
+  if (!side) return null;
+  if (pencil) {
+    return isEcho() && side === "out" ? "The echo's tail can't be drawn; drag its handles."
+      : "Draw over the fade to reshape its volume (Shift: a straight line). D to leave draw mode.";
+  }
+  const h = hit(x, y);
+  if (h) return describeEdge(h.side, h.edge);
+  return `${deckOf(side).label}: grey is its audio, dark is what you hear of it after EQ, filter and volume.`;
+}
+
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text; el.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.hidden = true; }, 7000);
+}
+
+function setStatus(text) { $("status").textContent = text; $("busy").textContent = text; }
+
+canvas.addEventListener("pointerleave", () => { if (!drag && !stroke) $("hint").hidden = true; });
 
 canvas.addEventListener("pointerup", () => {
   if (stroke) {
@@ -936,7 +1226,7 @@ canvas.addEventListener("dblclick", (e) => {
     const key = String(s.deck.deck), kfs = laneKfs(s.deck), i = kfs ? hitKf(s, x, y) : -1;
     if (i < 0) return;
     if (kfs.length === 1 && kfs[0][2] !== null) {
-      $("issues").textContent = "A lane keeps at least one keyframe (set it to 0 to switch it off).";
+      toast("A lane keeps at least one keyframe. Drag it to the middle line to make it do nothing.");
       return;
     }
     kfs.splice(i, 1);
@@ -978,14 +1268,37 @@ $("loop").onclick = () => {
 };
 $("save").onclick = save;
 $("revert").onclick = () => { state = structuredClone(item.state); requestPreview(); };
-$("pick").onchange = () => loadItem(Number($("pick").value));
+$("undo").onclick = undo;
+$("redo").onclick = redo;
+$("helpBtn").onclick = () => { $("help").hidden = !$("help").hidden; };
+$("pick").onchange = () => {
+  if (dirty && !confirm("This transition has unsaved changes. Discard them?")) {
+    $("pick").value = String(item.index);
+    return;
+  }
+  loadItem(Number($("pick").value));
+};
+window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 $("stemPick").onchange = () => { stemSel = $("stemPick").value; renderParams(); draw(); };
 document.addEventListener("keydown", (e) => {
-  if (e.code === "KeyD" && !e.metaKey && !e.ctrlKey && e.target.tagName !== "SELECT") {
+  if (["SELECT", "INPUT"].includes(e.target.tagName)) return;
+  if ((e.metaKey || e.ctrlKey) && e.code === "KeyZ") {
+    e.preventDefault();
+    e.shiftKey ? redo() : undo();
+    return;
+  }
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    if (!selected) return;
+    e.preventDefault();
+    nudge(e.code === "ArrowLeft" ? -1 : 1, e.altKey);
+    return;
+  }
+  if (e.key === "?") { $("help").hidden = !$("help").hidden; return; }
+  if (e.code === "KeyD" && !e.metaKey && !e.ctrlKey) {
     setPencil(!pencil);
     return;
   }
-  if (e.code === "Space" && e.target.tagName !== "SELECT") {
+  if (e.code === "Space") {
     e.preventDefault();
     live ? stop() : play(cursor);
   }
@@ -1015,7 +1328,8 @@ async function waitUntilRendered() {
   const info = await (await fetch("/items")).json();
   $("title").textContent = info.plan;
   for (const it of info.items) {
-    const o = document.createElement("option"); o.value = it.index; o.textContent = it.label; $("pick").append(o);
+    const o = document.createElement("option"); o.value = it.index; o.textContent = it.label; o.title = it.detail;
+    $("pick").append(o);
   }
   await loadItem(info.items[0].index);
 })();

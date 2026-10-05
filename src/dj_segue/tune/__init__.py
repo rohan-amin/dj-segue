@@ -178,14 +178,21 @@ class TuneSession:
             out.append(Item(i, start, end, seg.from_deck, seg.to_deck, seg.style))
         return out
 
+    def deck_name(self, deck: int) -> str:
+        return self.plan.decks[deck].label or f"deck {deck}"
+
     def label(self, it: Item) -> str:
         """`Like 'em All → Bottoms Up · echo out at beat 344` style."""
-        name = lambda d: self.plan.decks[d].label or f"deck {d}"  # noqa: E731
         seg = self.plan.timeline[it.index]
         start = mix_pos_to_seconds(seg.start_at, self.parts.mix_tempo, self.parts.timeline.anchors)
         kind = {"echo_out": "echo out", "vocal_handoff": "vocal handoff"}.get(it.style, "crossfade")
-        return (f"{name(it.from_deck)} → {name(it.to_deck)} · {kind} at mix beat "
-                f"{round(self.tempo.sec_to_beat(start), 1):g} (timeline[{it.index}])")
+        return (f"{self.deck_name(it.from_deck)} → {self.deck_name(it.to_deck)} · {kind} "
+                f"at beat {round(self.tempo.sec_to_beat(start), 1):g}")
+
+    def detail(self, it: Item) -> str:
+        """Where the item is in the plan file (the page's tooltip)."""
+        return (f"timeline[{it.index}] in {self.plan_path.name}: deck {it.from_deck} → "
+                f"deck {it.to_deck}; beats are mix beats from the start of the mix")
 
     def item(self, index: int) -> Item:
         for it in self.items():
@@ -454,15 +461,15 @@ class TuneSession:
                     kind, _, stem = _param(param)
                     if stem is not None:
                         raise ValueError(
-                            f"deck {deck} isn't mixed by stems in this session: add a stem "
-                            f"lane to the plan and reopen tune"
+                            f"{self.deck_name(deck)} isn't split into stems in this session. "
+                            f"Add a stem lane for it to the plan and reopen tune."
                         )
                     raise ValueError(f"unknown lane {param!r}")
                 kind, band, stem = _param(param)
                 i = self._lane_index(deck, param)
                 if not kfs:
                     if i is not None:
-                        raise ValueError(f"deck {deck} {param}: a lane needs a keyframe")
+                        raise ValueError("A lane needs at least one keyframe.")
                     continue
                 value_key = "value_db" if kind == "eq" else "value"
                 raw_kfs = self.raw["automation"][i]["keyframes"] if i is not None else []
@@ -614,7 +621,9 @@ class TuneSession:
         before = [(s.mix_start_sec, s.mix_end_sec) for s in self.parts.timeline.spans]
         after = [(s.mix_start_sec, s.mix_end_sec) for s in spans]
         if any(abs(a - b) > EPS for x, y in zip(before, after) for a, b in zip(x, y)):
-            raise ValueError("this edit moves audio (not supported yet: M4.5 T2)")
+            raise ValueError(
+                "That would move where a track plays in the mix, which tune can't do yet."
+            )
         it = self.item(index)
         echo = state.get("echo") if it.style == "echo_out" else None
         for side, deck in (("out", it.from_deck), ("in", it.to_deck)):
@@ -628,19 +637,21 @@ class TuneSession:
                 and w["end"] <= s.mix_end_sec + EPS
                 for s in self.parts.timeline.spans
             ):
-                what = "the echo's repeated beat" if side == "out" and echo else f"the {side} fade"
+                what = ("The beat the echo repeats" if side == "out" and echo
+                        else f"The fade-{side}")
                 raise ValueError(
-                    f"{what} must stay where deck {deck} plays "
-                    f"(moving a segment is M4.5 T2)"
+                    f"{what} has to stay within the part where {self.deck_name(deck)} plays."
                 )
         if it.style == "vocal_handoff":
             swap = float(state["swap"])
             for deck, t in ((it.from_deck, swap), (it.to_deck, swap - VOCAL_SWAP_SEC)):
                 if not any(s.deck == deck and s.mix_start_sec - EPS <= t <= s.mix_end_sec + EPS
                            for s in self.parts.timeline.spans):
-                    raise ValueError(f"the vocal swap must be where deck {deck} plays")
+                    raise ValueError(
+                        f"The vocal swap has to be where {self.deck_name(deck)} plays."
+                    )
         if echo is not None and self._smp(float(echo["end"])) > self.parts.total_samples:
-            raise ValueError("the echo tail can't run past the end of the mix here")
+            raise ValueError("The echo tail can't run past the end of the mix.")
 
     def save(self, index: int, state: dict) -> dict:
         result = self.preview(index, state)
@@ -758,6 +769,7 @@ def make_server(session: TuneSession, port: int = 0) -> ThreadingHTTPServer:
                     {
                         "index": it.index,
                         "label": session.label(it),
+                        "detail": session.detail(it),
                     }
                     for it in session.items()
                 ]
