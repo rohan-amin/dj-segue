@@ -416,3 +416,53 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Two Chrome browsers are connected; "Browser 2" is on this machine (Browser 1 can't reach localhost).
 - The tune server still reads `page.html` once at startup: restart after page edits.
 - Equality guarantees rely on identical float order: decks summed in sorted order; stems in the track's stem order; sosfilt with zi is bitwise block-invariant (verified).
+
+---
+
+## Session: 2026-10-04 (R2 tempo map + live tune playback; tune UI; A1 annotate)
+
+**Milestone:** R2 — Tempo map and live playback in tune (done); tune UI pass; A1 — Annotations for planning (started)
+**Duration:** approximately 60 turns
+**Worked on:** Schema v0.9 tempo map (steps + ramps), the tune page playing the whole mix live, a usability pass on tune, and a new `annotate` tool for describing tracks so transitions can be planned from the descriptions.
+
+### Completed
+- **milestones.md fixed:** R2 section; M6 renamed "Word timing and the planner" (word timing first); M3 marked done except its acceptance; later A1 added.
+- **Schema v0.9 tempo map** (`583cd67`): `meta.tempo_map: [{at, bpm, ramp?}]` — steps, or ramps linear in time (N beats take 120·N/(b0+b1) s). Mix beats count through it; mix durations count beats from where they start; `target_bpm: "mix"` segments and loops follow it (Warp); numeric target_bpm ignores it; echo `every` uses the tempo just before the cut. `TempoMap` / `Warp` / `mix_duration` in time_math; `resolved_tempo()` in the validator (changes resolve in order; an `after` that moves when the tempo changes is rejected; `after` positions needing grids defer until preprocess). Stretcher takes `rate_at` + `breaks` (varying Rubber Band ratio). Example `examples/fancy_likeem_echo74.plan.jsonc` (Bottoms Up unstretched at 74). Docs: `docs/schema-v0.9.md`.
+- **Live playback in tune** (`6fce85a`): `tune/live.py` (TuneLive) owns the sound device: play / stop / jump on a ruler click, gapless loop (next pass built ahead), each validated edit switched in like a `--watch` reload. `Player` gained `jump()` and `playing_at()` (playhead through jumps).
+- **Tune UI pass** (`7446227`): tooltips everywhere + canvas hover hints with live values; `?` shortcut sheet; Bass / Mids / Highs; plain-language labels, refusals and a readable change summary (exact text behind a toggle); undo/redo; unsaved marker + confirms; refusal toast; legend; strip scales; arrow-key nudge of the selected handle/keyframe.
+- **A1 `dj-segue annotate`** (`9f34a33`, `718213e`): page on scrub's base — grid check (½×/2×, downbeat ±1 beat, ±10 ms), tap 1–9 while playing to mark/label phrases, drag/split/merge (both directions, follows playback, keeps labels/notes), key with a drone check, tags/notes. Draft from analysis: detected section starts, Krumhansl key + confidence, per-bar stem activity (18 dB range below the stem's p95). Saves `annotations/<track>.json`; `summary()` is the planner's view.
+- Drafts for Crazy in Love and Pretty Girls Walk in `annotations/` (uncommitted; the user has started annotating Crazy in Love).
+- Reviewed the user's Crazy in Love annotation against published structure (see Open questions).
+
+### Tests
+- 353 passed, 0 failed (~2 min).
+- New: test_v09_tempo_map (17), test_tune_live (4), test_annotate (11); additions to test_tune.
+- Verified: plans without a tempo map render bit-identical to before (both real example mixes vs HEAD); live == offline with tempo changes; beats within 1.2 ms after a step, 0.6 ms through a ramp at 44.1 kHz.
+
+### Schema or interface changes
+- Schema v0.9 (additive): `meta.tempo_map`. Validation rule 17.
+- `Prepared.mix_tempo` / `DeckRender.mix_tempo` are now `TempoMap` (was float); time_math functions take a TempoMap or a bpm.
+- `Span.warp`, `CompiledPlay.warp`; `Stretcher(rate_at=, breaks=)`; `Player.pending` is (at, engine, jump).
+- New CLI command `annotate`; new package `dj_segue.annotate`.
+
+### Dependencies added/removed
+- none
+
+### Open questions
+- **Crazy in Love annotation** (user's, in progress): "pre-hook" used where it doesn't precede a hook (6–9, 28–31, 58–59 — the last is a 2-bar horn hit inside Jay-Z's verse); 74–77 looks like the bridge (vocals forward, beat thinner), not a breakdown; several odd lengths (6, 10, 2, 11) where the song moves in 8-bar blocks + 2-bar horn tags; outro 86–96 stays full with vocals (no clean exit). Key: published D minor (7A); detector said G minor (6A). Grid and key not yet marked checked; no tags/notes.
+- Pretty Girls Walk not annotated yet (key detected C# minor at only 17% confidence).
+- Uncommitted user edits to `examples/fancy_likeem_bottomsup.plan.jsonc` (a reshaped fade-in + highs EQ lane on Fancy, saved from tune) — left alone; ask before committing.
+- The browser tool's synthetic key presses/drags didn't reach the annotate page (clicks did; synthetic JS events worked). Real keys untested by me — confirm with the user.
+
+### Next session should
+- Finish both annotations with the user (apply the Crazy in Love review; annotate Pretty Girls Walk), commit `annotations/`.
+- Then the A1 test: read only the two annotation summaries, propose a transition (where, technique, length, why), write it as a plan, render, and have the user rate it.
+- After that: decide whether a transition proposer (candidate pairs + scoring + LLM choice) comes before M6 word timing.
+
+### Notes for future sessions
+- **Don't reproduce or quote song lyrics** — output gets blocked by the content filter ("Output blocked by content filtering policy") and the turn dies. Describe sections by function and performer only. genius.com can't be fetched anyway.
+- Rubber Band applies a new time ratio to audio it already holds: look the rate up ~start-delay (2048 frames) behind the input at mid-piece; end pieces on tempo steps at `break + lag − CHUNK/2`. Calibrated on click tracks — re-check if CHUNK or Rubber Band options change.
+- Real rap/R&B tracks have vocals almost everywhere; stem activity must be relative (18 dB range), or the vocals strip saturates.
+- Pages read their HTML once at server start: restart `tune` / `annotate` after editing a page.
+- A dirty page with a `beforeunload` guard blocks `tabs_close` in browser tests (a "Leave site?" dialog the user must dismiss) — save or reload before closing test tabs.
+- Click into a page before sending keys from the browser tool; clicks made before an item finishes loading get reset.
