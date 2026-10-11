@@ -126,7 +126,7 @@
       <button id="mergeNext" title="Join the selected phrase to the one after it (⇧⌫)">Merge with next</button>
       <button id="useSugg" title="Replace all phrases with the detected section starts (keeps nothing)">Reset to detected</button>
       <button id="undo" title="Undo (⌘Z)" disabled>↶ Undo</button>
-      <span class="keys">Tap <kbd>1</kbd>–<kbd>9</kbd> while playing to mark each section as it starts · faint ticks on the phrase lane are detected section starts</span>
+      <span class="keys">Tap <kbd>1</kbd>–<kbd>0</kbd>, <kbd>-</kbd> while playing to mark each section as it starts · faint ticks on the phrase lane are detected section starts</span>
     </div>
     <table style="margin-top:10px">
       <thead><tr><th></th><th></th><th title="First bar – last bar">bars</th><th title="Beats, as a plan writes them">beats</th><th title="Phrases are usually 4, 8, 16 or 32 bars">length</th>
@@ -177,7 +177,7 @@
 
   <p class="keys">
     <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> beat · <kbd>↓</kbd><kbd>↑</kbd> bar · <kbd>n</kbd><kbd>p</kbd> phrase ·
-    <kbd>1</kbd>–<kbd>9</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge with previous · <kbd>⇧⌫</kbd> merge with next · <kbd>l</kbd> loop phrase ·
+    <kbd>1</kbd>–<kbd>0</kbd>, <kbd>-</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge with previous · <kbd>⇧⌫</kbd> merge with next · <kbd>l</kbd> loop phrase ·
     <kbd>c</kbd> click · <kbd>⌘S</kbd> save · <kbd>⌘Z</kbd> undo
   </p>
 </main>
@@ -185,9 +185,10 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const KEYS_FOR = ["intro", "verse", "pre-hook", "hook", "breakdown", "build", "drop", "outro", "bridge"];
+const KEYS_FOR = ["intro", "verse", "pre-hook", "hook", "breakdown", "build", "drop", "outro", "bridge", "interlude", "riff"];
+const KEY_CHARS = "1234567890-";   // the key for each of KEYS_FOR
 const LABEL_COLORS = { intro: "#8d8a82", verse: "#2f8f6b", "pre-hook": "#7aa83a", hook: "#d9542b", breakdown: "#6b4fc9",
-  build: "#b07a24", drop: "#c0392b", outro: "#5a6b7a", bridge: "#2f6fdb", "?": "#b9b6ad" };
+  build: "#b07a24", drop: "#c0392b", outro: "#5a6b7a", bridge: "#2f6fdb", interlude: "#3a9a9a", riff: "#c2449a", "?": "#b9b6ad" };
 const STEM_ROWS = [["vocals", "--vocals"], ["drums", "--drums"], ["bass", "--bassstem"], ["other", "--other"]];
 
 let A = null;           // annotation (+ summary, labels, keys) from the server
@@ -633,7 +634,7 @@ function wire() {
   $("save").onclick = save;
   KEYS_FOR.forEach((l, i) => {
     const b = document.createElement("button");
-    b.innerHTML = `<kbd>${i + 1}</kbd>${l}`; b.style.borderLeft = `4px solid ${LABEL_COLORS[l]}`;
+    b.innerHTML = `<kbd>${KEY_CHARS[i]}</kbd>${l}`; b.style.borderLeft = `4px solid ${LABEL_COLORS[l]}`;
     b.title = `${l}: while playing, starts a phrase here; paused, labels the selected phrase`;
     b.onclick = () => tapLabel(l);
     $("labelBtns").append(b);
@@ -701,7 +702,7 @@ function wire() {
     const k = e.key, seeks = { ArrowLeft: -1, ArrowRight: 1, ArrowDown: -4, ArrowUp: 4 };
     if (k === " ") togglePlay();
     else if (k in seeks) gotoBeat(currentBeat() + seeks[k]);
-    else if (k >= "1" && k <= "9") tapLabel(KEYS_FOR[Number(k) - 1]);
+    else if (k.length === 1 && KEY_CHARS.includes(k)) tapLabel(KEYS_FOR[KEY_CHARS.indexOf(k)]);
     else if (k === "s") addStart(nearestBar(), null);
     else if (k === "Backspace" || k === "Delete") e.shiftKey ? mergeNext() : mergePrev();
     else if (k === "n") $("nextP").onclick();

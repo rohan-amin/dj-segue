@@ -52,7 +52,7 @@
       "from_deck": 1, "to_deck": 2,
       "start_at": { "after": "fancy_end", "offset": { "beats": -32 } },
       "duration": { "beats": 32 },
-      "in": { "curve": { "points": [[0, 0], [0.1263, 0.0483], [0.2339, 0.065], [0.4776, 0.1004], [0.5315, 0.7216], [0.625, 0.8316], [0.75, 0.924], [0.875, 0.9808], [1, 1]] } } },
+      "in": { "curve": { "points": [[0, 0], [0.1232, 0], [0.2349, 0.0226], [0.4726, 0.0239], [0.5315, 0.7216], [0.625, 0.8316], [0.75, 0.924], [0.875, 0.9808], [1, 1]] } } },
 
     { "type": "play", "deck": 3, "track": "bottomsup",
       "from": { "beat": 0 }, "to": { "beat": 296 },
@@ -63,5 +63,12 @@
       "from_deck": 2, "to_deck": 3,
       "start_at": { "after": "likeem_end", "offset": { "beats": -32 } },
       "duration": { "beats": 32 } }
+  ],
+  "automation": [
+    { "lane": "eq", "deck": 1, "band": "high",
+      "keyframes": [
+        { "at": { "after": "fancy_end", "offset": { "beats": -17 } }, "value_db": 1 },
+        { "at": { "after": "fancy_end", "offset": { "beats": -15 } }, "value_db": 10.5 }
+      ] }
   ]
 }

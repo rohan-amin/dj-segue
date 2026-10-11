@@ -29,7 +29,7 @@ import numpy as np
 from dj_segue.time_math import TrackGrid
 
 VERSION = 1
-LABELS = ("intro", "verse", "pre-hook", "hook", "breakdown", "build", "drop", "outro", "bridge", "?")
+LABELS = ("intro", "verse", "pre-hook", "hook", "breakdown", "build", "drop", "outro", "bridge", "interlude", "riff", "?")
 STEMS = ("vocals", "drums", "bass", "other")
 # Stem activity spans this many dB below a stem's loud bars (0 at the
 # bottom, 1 at the top): narrow enough that a quieter verse reads lower
