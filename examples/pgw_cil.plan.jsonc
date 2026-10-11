@@ -1,0 +1,63 @@
+// examples/pgw_cil.plan.jsonc
+//
+// Pretty Girls Walk into Crazy in Love — the A1 test: planned only from the
+// two annotation summaries (annotations/*.json), not by ear.
+//
+// The idea: a fake-out on the build. Pretty Girls Walk drops to a 1-bar,
+// vocals-only pre-hook before each hook (bar 39 before the last one: no
+// drums, almost no bass). The listener expects its hook on the next
+// downbeat; instead, Crazy in Love's 2-bar horn riff lands there and the
+// last vocal phrase echoes out over it.
+//
+//   - Lead-in: Pretty Girls Walk from its second verse (bar 32) through the
+//     pre-hook bar 39, ending at bar 40 (beat 160).
+//   - Tempo: 90 → 99.26 is ~10 %. The mix ramps over the pre-hook bar alone,
+//     where there are no drums to give the speed-up away, so Crazy in Love
+//     then plays at its own tempo.
+//   - Cut: echo out of Pretty Girls Walk on bar 40 — its last beat repeats
+//     on the beat, high-passed, under the horns. No overlap of the two
+//     tracks' harmony beyond the echo tail, so the uncertain keys (PGW
+//     detected C# minor at 17 %, CIL G minor unchecked) matter little.
+//   - Crazy in Love from its annotated riff (bar 10) through the verse and
+//     the first hook, ending where the interlude starts (bar 28): energy
+//     0.87 → 0.49 → 0.93, a natural arc after the drop.
+
+{
+  "schema_version": "0.9",
+
+  "meta": {
+    "mix_name": "Pretty Girls Walk into Crazy in Love (horn drop on the pre-hook)",
+    "source_prompt": "A1 test: propose a transition from Pretty Girls Walk to Crazy in Love from the annotations alone",
+    "mix_tempo": 90,
+    "tempo_map": [
+      { "at": { "beat": 28 }, "bpm": 99.265, "ramp": { "beats": 4 } }   // PGW's pre-hook bar 39 = mix beats 28–32
+    ]
+  },
+
+  "tracks": {
+    "pgw": { "path": "audio/01 - Pretty Girls Walk [Explicit].mp3" },
+    "cil": { "path": "audio/01 - Crazy In Love.mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "pgw" },
+    "2": { "label": "cil" }
+  },
+
+  "timeline": [
+    { "type": "play", "id": "pgw", "deck": 1, "track": "pgw",
+      "from": { "bar": 32 }, "to": { "bar": 40 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "deck": 2, "track": "cil",
+      "from": { "bar": 10 }, "to": { "bar": 28 },            // riff, verse, hook
+      "start_at": { "after": "pgw" },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "echo_out",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "pgw" },
+      "duration": { "beats": 4 },
+      "echo": { "every": { "beats": 1 }, "feedback": 0.5, "highpass": 0.6 } }
+  ]
+}

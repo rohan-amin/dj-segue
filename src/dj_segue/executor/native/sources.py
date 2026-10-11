@@ -20,6 +20,10 @@ Tempo changes (v0.9): a segment with a `warp` follows the mix tempo, so
 it's stretched with a varying rate (`Stretcher(rate_at=…)`); a warped loop
 renders each repetition on its own, since each lands on different mix beats.
 
+Building a loop is slow (its whole span at once), so a reader going block by
+block (the live engine) starts building one in the background LOOP_PREBUILD_SEC
+before it begins and picks it up there; the audio is the same either way.
+
 Seeking (`start` > 0) begins mid-mix, for live playback from a position: a
 stretched segment entered part-way is warmed up for SEEK_WARMUP_SEC first,
 so it sounds right but isn't bit-identical to playing from the top.
@@ -28,6 +32,7 @@ so it sounds right but isn't bit-identical to playing from the top.
 from __future__ import annotations
 
 import math
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -39,6 +44,17 @@ from dj_segue.time_math import Warp
 LOOP_SEAM_SEC = 0.003
 # Stretched audio entered part-way (a seek) is run this long before use.
 SEEK_WARMUP_SEC = 0.5
+# A loop starts building in the background this long before it plays.
+LOOP_PREBUILD_SEC = 4.0
+
+_prebuild_pool: ThreadPoolExecutor | None = None
+
+
+def _prebuild(fn, *args) -> Future:
+    global _prebuild_pool
+    if _prebuild_pool is None:
+        _prebuild_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="loop-prebuild")
+    return _prebuild_pool.submit(fn, *args)
 
 
 @dataclass(frozen=True)
@@ -221,6 +237,7 @@ class DeckSource:
         self.audio, self.sr = audio, sample_rate
         self.pos = start
         self.live: dict[int, tuple[_Segment, int]] = {}  # index → (segment, next read k)
+        self.ahead: dict[int, Future] = {}  # index → loop segment being built
 
     def read(self, a: int, b: int) -> np.ndarray:
         assert a == self.pos, "DeckSource reads must be consecutive"
@@ -230,10 +247,19 @@ class DeckSource:
             if hi <= a or lo >= b:
                 if hi <= a:
                     self.live.pop(i, None)
+                elif (c.rep_starts and i not in self.ahead
+                      and lo - b < LOOP_PREBUILD_SEC * self.sr):
+                    # (a loop ignores `first`: it renders its whole span)
+                    self.ahead[i] = _prebuild(
+                        _Segment, self.audio(c.track_id), c, lead, fade_out, self.sr
+                    )
                 continue
             r0, r1 = max(a, lo), min(b, hi)
             if i not in self.live:
-                seg = _Segment(self.audio(c.track_id), c, lead, fade_out, self.sr, r0 - lo)
+                if i in self.ahead:
+                    seg = self.ahead.pop(i).result()
+                else:
+                    seg = _Segment(self.audio(c.track_id), c, lead, fade_out, self.sr, r0 - lo)
                 self.live[i] = (seg, r0 - lo)
             seg, k = self.live[i]
             assert k == r0 - lo

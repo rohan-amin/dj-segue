@@ -25,3 +25,6 @@ venv/
 
 # Local music for real-audio mixing/testing (copyrighted; never commit)
 /audio/
+
+# Rendered mixes (contain the copyrighted audio; never commit)
+/renders/

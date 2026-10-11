@@ -1,0 +1,106 @@
+// examples/pgw_cil_beatswitch.plan.jsonc
+//
+// Pretty Girls Walk into Crazy in Love by a beat switch — the second A1
+// test, planned from the two annotation summaries. Mixed by stems (M3).
+//
+// The idea: Pretty Girls Walk's second verse keeps going, but the beat under
+// it changes. Its verse is a sparse beat plus a vocal (other ≈ 0.05), so the
+// vocal stands on its own; Crazy in Love's interlude (bars 6–9: drums, horns
+// and guitar, thin bass) becomes the new bed. Then both tracks' structures
+// line up: PGW's vocals-only pre-hook bar is where CIL's beat drops out too,
+// and on the next downbeat — where PGW's hook would land — CIL's horn riff
+// comes in and the song carries on as Crazy in Love.
+//
+//   mix beats  0–32   PGW hook (bars 20–27). The mix ramps 90 → 99.26 from
+//                     beat 16 to 48 (~10 % over ~20 s), so CIL needs no
+//                     stretching later.
+//             32–48   PGW verse 2 starts as itself.
+//             48      Beat switch: PGW's drums, bass and other stems go out on
+//                     the downbeat; CIL's interlude comes in under its vocal,
+//                     looped twice (8 bars), with CIL's own vocals muted and a
+//                     low-pass opening over the loop (the build).
+//             76–80   PGW's pre-hook bar: CIL's drums and bass drop out too,
+//                     leaving PGW's voice over CIL's horns.
+//             80      CIL's riff (bar 10), everything in, CIL's vocals back on;
+//                     then its verse and first hook (to bar 27).
+//
+// Risk: PGW's vocal sits over CIL's harmony for 8 bars, and neither key is
+// checked (PGW C# minor at 17 %, CIL G minor). A rapped vocal over a thin
+// bass bed is the most forgiving case for that.
+
+{
+  "schema_version": "0.9",
+
+  "meta": {
+    "mix_name": "Pretty Girls Walk into Crazy in Love (beat switch under the verse)",
+    "source_prompt": "A1 test 2: a transition from Pretty Girls Walk to Crazy in Love that isn't a crossfade or echo out",
+    "mix_tempo": 90,
+    "tempo_map": [
+      { "at": { "beat": 16 }, "bpm": 99.265, "ramp": { "beats": 32 } }
+    ]
+  },
+
+  "tracks": {
+    "pgw": { "path": "audio/01 - Pretty Girls Walk [Explicit].mp3" },
+    "cil": { "path": "audio/01 - Crazy In Love.mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "pgw" },
+    "2": { "label": "cil" }
+  },
+
+  "timeline": [
+    { "type": "play", "id": "pgw", "deck": 1, "track": "pgw",
+      "from": { "bar": 20 }, "to": { "bar": 40 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "loop", "id": "cil_loop", "deck": 2, "track": "cil",
+      "from": { "bar": 6 },                                   // the interlude
+      "start_at": { "beat": 48 },                              // PGW bar 32
+      "target_bpm": "mix",
+      "schedule": [ { "length": { "beats": 16 }, "repetitions": 2 } ] },
+
+    { "type": "play", "deck": 2, "track": "cil",
+      "from": { "bar": 10 }, "to": { "bar": 28 },            // riff, verse, hook
+      "start_at": { "after": "cil_loop" },
+      "target_bpm": "mix" },
+
+    // The switch as one window, beats 48–80: CIL's bed comes up on the first
+    // downbeat, PGW (by then only its vocal) goes on the riff. The stem lanes
+    // below do the shaping inside it.
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "pgw", "offset": { "beats": -32 } },
+      "duration": { "beats": 32 },
+      "curve": "linear",
+      "in":  { "duration": { "beats": 0.05 } },
+      "out": { "offset": { "beats": 31.9 }, "duration": { "beats": 0.1 } } }
+  ],
+
+  "automation": [
+    // The beat switch: PGW down to its vocal on the downbeat of mix beat 48.
+    { "lane": "stem_volume", "deck": 1, "stem": "drums",
+      "keyframes": [ { "at": { "beat": 47.75 }, "value": 1 }, { "at": { "beat": 48 }, "value": 0 } ] },
+    { "lane": "stem_volume", "deck": 1, "stem": "bass",
+      "keyframes": [ { "at": { "beat": 47.75 }, "value": 1 }, { "at": { "beat": 48 }, "value": 0 } ] },
+    { "lane": "stem_volume", "deck": 1, "stem": "other",
+      "keyframes": [ { "at": { "beat": 47.75 }, "value": 1 }, { "at": { "beat": 48 }, "value": 0 } ] },
+
+    // CIL's vocals stay out until its riff.
+    { "lane": "stem_volume", "deck": 2, "stem": "vocals",
+      "keyframes": [ { "at": { "beat": 79.75 }, "value": 0 }, { "at": { "beat": 80 }, "value": 1 } ] },
+
+    // CIL's drums and bass drop out for PGW's pre-hook bar, back on the riff.
+    { "lane": "stem_volume", "deck": 2, "stem": "drums",
+      "keyframes": [ { "at": { "beat": 75.75 }, "value": 1 }, { "at": { "beat": 76 }, "value": 0 },
+                     { "at": { "beat": 79.9 }, "value": 0 }, { "at": { "beat": 80 }, "value": 1 } ] },
+    { "lane": "stem_volume", "deck": 2, "stem": "bass",
+      "keyframes": [ { "at": { "beat": 75.75 }, "value": 1 }, { "at": { "beat": 76 }, "value": 0 },
+                     { "at": { "beat": 79.9 }, "value": 0 }, { "at": { "beat": 80 }, "value": 1 } ] },
+
+    // The build: CIL's bed opens from a low-pass over the loop, fully open by the drop-out.
+    { "lane": "filter", "deck": 2,
+      "keyframes": [ { "at": { "beat": 48 }, "value": -0.5 }, { "at": { "beat": 76 }, "value": 0 } ] }
+  ]
+}

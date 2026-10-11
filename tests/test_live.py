@@ -227,3 +227,31 @@ def test_switch_plays_the_new_plan(tmp_path) -> None:
     span = slice(at + int(0.05 * SR), at + int(0.05 * SR) + 4 * BEAT)
     assert _rel_db(out[span], new_full[span]) < -30
     assert _rel_db(out[span], old_full[span]) > -15  # and audibly not the old one
+
+
+def test_loop_is_built_before_it_plays() -> None:
+    """A loop renders its whole span at once; read block by block, it's built
+    in the background ahead of its start, and sounds the same."""
+    from dj_segue.executor.native.sources import LOOP_PREBUILD_SEC, CompiledPlay, DeckSource
+
+    rng = np.random.default_rng(3)
+    audio = rng.standard_normal((10 * SR, 2)).astype(np.float32)
+    start = int((LOOP_PREBUILD_SEC + 1) * SR)
+    rep = BEAT
+    loop = CompiledPlay(deck=1, mix_start_sample=start, mix_end_sample=start + 4 * rep,
+                        track_start_sample=SR, track_id="a", rate=1.0,
+                        rep_starts=tuple(start + k * rep for k in range(4)),
+                        loop_track_samples=rep)
+    end = loop.mix_end_sample
+    whole = DeckSource([(loop, 0)], lambda _: audio, SR).read(0, end)
+
+    src = DeckSource([(loop, 0)], lambda _: audio, SR)
+    blocks, pos = [], 0
+    while pos < end:
+        n = min(BLOCK, end - pos)
+        if pos < start <= pos + n:
+            assert 0 in src.ahead  # started building before its first block
+        blocks.append(src.read(pos, pos + n))
+        pos += n
+    assert not src.ahead
+    np.testing.assert_array_equal(np.concatenate(blocks), whole)
