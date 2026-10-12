@@ -242,6 +242,48 @@ def annotate(
 
 
 @app.command()
+def prepare(
+    audio_paths: list[Path] = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    folder: Path = typer.Option(
+        Path("annotations"), "--folder", help="Where annotations are saved (one JSON per track)."
+    ),
+    no_words: bool = typer.Option(False, "--no-words", help="Skip word timing (and the lyrics lookup)."),
+    no_whisper: bool = typer.Option(
+        False, "--no-whisper", help="Word timing from the lyrics only (faster; nothing confirmed)."
+    ),
+) -> None:
+    """Get new tracks ready in one step: beat analysis, stems, word timing and
+    an annotation draft. Cached: running it again only does what's missing."""
+    from dj_segue.prepare import prepare as run
+
+    failed = 0
+    for path in audio_paths:
+        typer.echo(f"{path.name}")
+        try:
+            r = run(path, folder=folder, words=not no_words, whisper=not no_whisper, log=typer.echo)
+        except Exception as e:  # keep going with the other files
+            typer.echo(f"  failed: {e}", err=True)
+            failed += 1
+            continue
+        w = r.get("words")
+        if w:
+            src = (f"LRCLIB {w['lyrics']['id']} ({'line-timed' if w['lyrics']['synced'] else 'plain'})"
+                   if w["lyrics"] else "no lyrics found: Whisper only")
+            conf = f", {w['confirmed']} confirmed" if w["confirmed"] is not None else ""
+            typer.echo(f"  words: {w['words']} — {src}{conf}; {w['low_score']} weakly aligned")
+        elif r.get("words_error"):
+            typer.echo(f"  words: skipped — {r['words_error']}")
+        typer.echo(
+            f"  annotation {r['annotation']}: {r['annotated_bpm']:.2f} bpm, {r['bars']} bars, "
+            f"key {r['key']} ({r['camelot']}, {r['key_confidence']:.0%}), "
+            f"{r['sections']} sections ({r['labelled']} labelled), {r['cues']} cue{'s' * (r['cues'] != 1)} → {r['annotation_path']}"
+        )
+    if failed:
+        raise typer.Exit(code=1)
+    typer.echo(f'next: dj-segue annotate "{audio_paths[0]}"  (label sections, check grid and key, mark cues)')
+
+
+@app.command()
 def words(
     audio_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     artist: str | None = typer.Option(None, "--artist", help="Override the file's artist tag."),

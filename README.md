@@ -20,6 +20,7 @@ Schema v0.8. General mixing works: plans with crossfades, cuts, echo outs, vocal
 brew install rubberband          # time-stretching (Debian/Ubuntu: apt install librubberband-dev)
 pip install -e ".[dev,downbeats,stems,words]"   # `downbeats`, `stems`, `words` are optional (PyTorch)
 
+dj-segue prepare    audio/new_track.mp3                 # new track: beats, stems, words, annotation draft
 dj-segue inspect    examples/crossfade_mix.plan.jsonc   # plan summary + validation
 dj-segue preprocess examples/crossfade_mix.plan.jsonc   # analyze tracks (tempo, beat grid)
 dj-segue play       examples/crossfade_mix.plan.jsonc   # play through the speakers (starts at once)
@@ -36,6 +37,11 @@ artist/title tags) aligned to the separated vocals, checked against a Whisper
 transcription (words Whisper also heard there are marked confirmed; ad-libs only
 Whisper heard are added). Results, lyrics included, stay in `.cache/words/`
 (git-ignored); the command prints counts, `--show` prints the words.
+
+`dj-segue prepare <file>…` gets new tracks ready in one step: beat analysis, stem
+separation, word timing (as `dj-segue words`) and an annotation draft in `annotations/`
+(an existing annotation is kept). Everything is cached, so re-running only does what's
+missing. Then `dj-segue annotate <file>` to label sections, check grid and key, and mark cues.
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
 track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`
