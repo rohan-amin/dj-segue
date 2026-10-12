@@ -20,6 +20,12 @@ is handed to the playing engine, so it's heard within a moment. The
 excerpt each preview mixes is what the page draws from (and what tests
 compare with a render).
 
+Each deck's lane also shows what plays on it (M4.5 T9): where its segments
+start ("→ cue: everybody", a jump), loops with their repetitions, and the
+cues marked in the track's annotation. A loop's repetitions and length can
+be changed here: that moves audio, so it's written to the plan straight
+away and the decks re-render (`set_loop`).
+
 Items are crossfades and echo outs. For each, the page also edits the two
 decks' EQ (low / mid / high) and filter lanes over the region: keyframes the
 page didn't touch keep their exact text; moved ones keep their position's
@@ -52,6 +58,7 @@ from dj_segue.executor.native.engine import DeckRender, prepare
 from dj_segue.executor.native.live import LiveEngine
 from dj_segue.schema import PlanValidationError, jsonc, validate_against_audio, validate_plan
 from dj_segue.schema.jsonc_edit import DELETE, append_item, edit_object
+from dj_segue.schema.version import SUPPORTED_SCHEMA_VERSIONS
 from dj_segue.tune.live import TuneLive
 from dj_segue.schema.plan import (
     AfterPos,
@@ -75,11 +82,15 @@ from dj_segue.time_math import (
 CURVES = ("equal_power", "linear", "exponential")
 STYLES = ("crossfade", "echo_out", "vocal_handoff")
 PARAMS = ("low", "mid", "high", "filter")  # the lanes the page edits per deck
-VERSIONS = ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9")
+# Schema versions, oldest first (for bumping a plan to what an edit needs).
+VERSIONS = tuple(sorted(SUPPORTED_SCHEMA_VERSIONS, key=lambda v: tuple(map(int, v.split(".")))))
 CONTEXT_BEATS = 16  # shown either side of a transition
 PEAK_BUCKETS = 2400
 GAIN_RATE = 100  # Hz, for drawing the gain curves
 EPS = 1e-6  # seconds
+# Segments this close are back to back; a fade may run up to this past where
+# a deck plays (cue times are stored to 0.1 ms, so not exactly on a beat).
+JOIN_SEC = 0.001
 
 
 @dataclass
@@ -115,6 +126,7 @@ class TuneSession:
         self._lock = threading.Lock()
         self.live: TuneLive | None = None  # set by load()
         self._audio_cache: dict = {}  # track audio for live engines
+        self._cues: dict[str, dict] = {}  # track → cues marked in its annotation
 
     def load(self) -> None:
         """Render the decks (the slow part: time-stretching, cached on disk)."""
@@ -313,7 +325,113 @@ class TuneSession:
             "label": self.plan.decks[deck].label or f"deck {deck}",
             "peaks": peaks,
             "plays": [{"start": a, "end": b, "track": t} for a, b, t in spans],
+            "segments": self._segments(it, deck),
+            "cues": self._cue_marks(it, deck),
         }
+
+    # -- what plays on a deck (T9) ------------------------------------------
+
+    def _deck_spans(self, it: Item, deck: int):
+        sr = self.parts.sample_rate
+        return [sp for sp in self.parts.timeline.spans
+                if sp.deck == deck and sp.kind != "silence"
+                and sp.mix_end_sec > it.start / sr and sp.mix_start_sec < it.end / sr]
+
+    def _segments(self, it: Item, deck: int) -> list[dict]:
+        """Each play / loop on the deck in view: where it starts and ends in
+        the mix, where in its track it starts, and a loop's repetitions."""
+        from dj_segue.inspect.pretty import _fmt_track_position
+
+        out = []
+        for sp in self._deck_spans(it, deck):
+            seg = self.plan.timeline[sp.index]
+            d = {
+                "index": sp.index, "kind": sp.kind, "id": seg.id,
+                "start": sp.mix_start_sec, "end": sp.mix_end_sec,
+                "from": _fmt_track_position(seg.from_),
+            }
+            if sp.kind == "loop":
+                steps = self.raw["timeline"][sp.index]["schedule"]
+                d["reps"] = [r.mix_start_sec for r in sp.reps]
+                d["schedule"] = [
+                    {"beats": _track_beats(st["length"], self.grids.get(sp.track_id)),
+                     "repetitions": st["repetitions"]}
+                    for st in steps
+                ]
+            out.append(d)
+        return out
+
+    def _cue_marks(self, it: Item, deck: int) -> list[dict]:
+        """The track's annotation cues where the deck plays them (a loop's
+        first pass)."""
+        out = []
+        for sp in self._deck_spans(it, deck):
+            cues = self._marked_cues(sp.track_id)
+            if not cues:
+                continue
+            if sp.kind == "loop":
+                t0, t1 = sp.track_from_sec, sp.track_from_sec + sp.reps[0].track_len_sec
+                to_mix = lambda c, sp=sp: sp.mix_start_sec + (c - sp.track_from_sec) / sp.rate  # noqa: E731
+            elif sp.warp is not None:
+                t0, t1 = sp.track_from_sec, sp.warp.track_sec(sp.mix_end_sec)
+                to_mix = sp.warp.mix_sec
+            else:
+                t0 = sp.track_from_sec
+                t1 = t0 + (sp.mix_end_sec - sp.mix_start_sec) * sp.rate
+                to_mix = lambda c, sp=sp: sp.mix_start_sec + (c - sp.track_from_sec) / sp.rate  # noqa: E731
+            for name, sec in cues.items():
+                at = float(to_mix(sec))
+                if t0 - EPS <= sec <= t1 + EPS and not any(
+                        c["name"] == name and abs(c["at"] - at) < 1e-3 for c in out):
+                    out.append({"name": name, "at": at})  # (once at a boundary)
+        return out
+
+    def _marked_cues(self, track_id: str) -> dict:
+        if track_id not in self._cues:
+            from dj_segue.annotate import annotation_cues
+
+            track = self.plan.tracks[track_id]
+            cues = {}
+            if "full" in track.stems:
+                audio = (self.audio_root / track.stems["full"]).resolve()
+                cues = (annotation_cues(audio, self.audio_root / "annotations")
+                        or annotation_cues(audio) or {})
+            self._cues[track_id] = cues
+        return self._cues[track_id]
+
+    def set_loop(self, index: int, beats: float, repetitions: int) -> dict:
+        """Change a single-step loop's length (track beats) and repetitions:
+        written to the plan file at once (it moves audio), then the decks
+        re-render. The page reloads when they're ready."""
+        seg = self.plan.timeline[index]
+        raw = self.raw["timeline"][index]
+        if seg.type != "loop" or len(raw["schedule"]) != 1:
+            return {"ok": False, "issues": ["Only a loop with one step can be changed here; edit the plan for the rest."]}
+        if repetitions < 1 or beats <= 0:
+            return {"ok": False, "issues": ["A loop needs at least one repetition and a positive length."]}
+        step = {"length": {"beats": _num(beats)}, "repetitions": int(repetitions)}
+        text = edit_object(self.text, ("timeline", index), {"schedule": [step]})
+        try:
+            raw2 = jsonc.loads(text)
+            plan = Plan.model_validate(raw2)
+            validate_plan(plan, self.grids)
+            validate_against_audio(plan, self.durations, self.grids)
+        except (ValidationError, PlanValidationError, ValueError) as e:
+            issues = e.issues if isinstance(e, PlanValidationError) else [str(e)]
+            return {"ok": False, "issues": issues}
+        if self.live is not None:
+            self.live.stop()
+        self.plan_path.write_text(text)
+        self.text, self.raw, self.plan = text, raw2, plan
+        self.progress = {"done": 0, "total": 0, "ready": False, "error": None}
+        threading.Thread(target=self._reload, daemon=True).start()
+        return {"ok": True}
+
+    def _reload(self) -> None:
+        try:
+            self.load()
+        except Exception:
+            pass  # reported through progress["error"]
 
     # -- edits ---------------------------------------------------------
 
@@ -631,12 +749,8 @@ class TuneSession:
             if side == "out" and echo is not None:
                 # The echo repeats the `every` before the cut.
                 w["start"] -= float(echo["every"]) * 60.0 / self.tempo.bpm_before(w["start"])
-            if not any(
-                s.deck == deck
-                and s.mix_start_sec - EPS <= w["start"]
-                and w["end"] <= s.mix_end_sec + EPS
-                for s in self.parts.timeline.spans
-            ):
+            if not any(a - JOIN_SEC <= w["start"] and w["end"] <= b + JOIN_SEC
+                       for a, b in self._playing(deck)):
                 what = ("The beat the echo repeats" if side == "out" and echo
                         else f"The fade-{side}")
                 raise ValueError(
@@ -645,13 +759,24 @@ class TuneSession:
         if it.style == "vocal_handoff":
             swap = float(state["swap"])
             for deck, t in ((it.from_deck, swap), (it.to_deck, swap - VOCAL_SWAP_SEC)):
-                if not any(s.deck == deck and s.mix_start_sec - EPS <= t <= s.mix_end_sec + EPS
-                           for s in self.parts.timeline.spans):
+                if not any(a - JOIN_SEC <= t <= b + JOIN_SEC for a, b in self._playing(deck)):
                     raise ValueError(
                         f"The vocal swap has to be where {self.deck_name(deck)} plays."
                     )
         if echo is not None and self._smp(float(echo["end"])) > self.parts.total_samples:
             raise ValueError("The echo tail can't run past the end of the mix.")
+
+    def _playing(self, deck: int) -> list[tuple[float, float]]:
+        """Where the deck plays, mix seconds: back-to-back segments (a jump,
+        a loop) joined into one stretch."""
+        out: list[list[float]] = []
+        for sp in sorted((s for s in self.parts.timeline.spans
+                          if s.deck == deck and s.kind != "silence"), key=lambda s: s.mix_start_sec):
+            if out and sp.mix_start_sec <= out[-1][1] + JOIN_SEC:
+                out[-1][1] = max(out[-1][1], sp.mix_end_sec)
+            else:
+                out.append([sp.mix_start_sec, sp.mix_end_sec])
+        return [(a, b) for a, b in out]
 
     def save(self, index: int, state: dict) -> dict:
         result = self.preview(index, state)
@@ -737,6 +862,15 @@ def _clean_curve(curve: Any) -> Any:
     return out
 
 
+def _track_beats(dur: dict, grid) -> float:
+    """A schedule length (as written) in track beats."""
+    if "beats" in dur:
+        return dur["beats"]
+    if "bars" in dur:
+        return dur["bars"] * 4
+    return dur["seconds"] * grid.bpm / 60.0
+
+
 def _num(x: float) -> float:
     v = round(float(x), 4)
     return int(v) if v.is_integer() else v
@@ -804,7 +938,9 @@ def make_server(session: TuneSession, port: int = 0) -> ThreadingHTTPServer:
             except (ValueError, KeyError, TypeError):
                 self.send_error(HTTPStatus.BAD_REQUEST)
                 return
-            if self.path == "/preview":
+            if self.path == "/loop":  # {index, state: {beats, repetitions}}
+                self._json(session.set_loop(index, float(state["beats"]), int(state["repetitions"])))
+            elif self.path == "/preview":
                 self._json(session.preview(index, state))
             elif self.path == "/save":
                 self._json(session.save(index, state))

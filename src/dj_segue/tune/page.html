@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tune</title>
 <style>
-  :root {
+  :root { --cue: #e0457b; --seg: #b07a24;
     --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dcdad4;
     --wave: #c9c6bd; --wave-on: #3d3b36; --accent: #2f6fdb; --out: #d9542b; --in: #2f6fdb;
     --win: rgba(47, 111, 219, 0.08); --nodeck: rgba(0, 0, 0, 0.05); --bad: #c0392b; --kf: #7b4fd6;
@@ -124,8 +124,12 @@
       <span><i style="background: var(--win); border: 1px solid var(--line)"></i>the fade</span>
       <span><i style="background: var(--nodeck); border: 1px solid var(--line)"></i>deck not playing</span>
       <span><i class="line" style="background: var(--kf)"></i>EQ / filter / stem lane</span>
+      <span><i class="line" style="background: var(--seg)"></i>segment start / loop</span>
+      <span><i class="line" style="background: var(--cue)"></i>cue (from the annotation)</span>
     </div>
   </div>
+
+  <div class="panel controls" id="loops" hidden></div>
 
   <div class="panel controls">
     <button class="play" id="playBlend" title="Play from 8 beats before the transition (Space plays from the cursor)">▶ Play blend</button>
@@ -346,6 +350,7 @@ function draw() {
 
   lanes().forEach((lane, i) => drawLane(lane, item.decks[i], i === 0 ? "out" : "in"));
   strips().forEach(drawStrip);
+  lanes().forEach((lane, i) => drawMarks(lane, item.decks[i]));
 
   // Cursor and playhead.
   ctx.fillStyle = css("--muted");
@@ -357,6 +362,89 @@ function draw() {
       ctx.fillRect(Math.round(xOf(t)) - 1, 0, 2, h);
     }
   }
+}
+
+// What plays on the deck: where segments start (a jump: "→ cue: everybody"),
+// loops (shaded, a tick per pass) and the annotation's cues.
+function tag(text, x, y, color) {
+  ctx.font = "600 10.5px -apple-system, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+  const w = ctx.measureText(text).width + 8;
+  const left = Math.min(Math.max(x, 0), canvas.clientWidth - w);
+  ctx.fillStyle = color; ctx.fillRect(left, y, w, 15);
+  ctx.fillStyle = "#fff"; ctx.fillText(text, left + 4, y + 2);
+  return w;
+}
+function drawMarks(lane, deck) {
+  const x0 = xOf(item.start_sec), x1 = xOf(item.end_sec), seg = css("--seg");
+  for (const s of deck.segments || []) {
+    const a = xOf(s.start), b = xOf(s.end);
+    if (s.kind === "loop") {
+      ctx.globalAlpha = 0.12; ctx.fillStyle = seg; ctx.fillRect(a, lane.top, b - a, lane.h); ctx.globalAlpha = 1;
+      ctx.fillStyle = seg;
+      for (const r of s.reps.slice(1)) {
+        const x = Math.round(xOf(r));
+        for (let y = lane.top; y < lane.top + lane.h; y += 6) ctx.fillRect(x, y, 1, 3);
+      }
+    }
+    if (a > x0 + 1 && a < x1) {
+      ctx.fillStyle = seg; ctx.fillRect(Math.round(a) - 1, lane.top, 2, lane.h);
+      const st = s.schedule && s.schedule.length === 1 ? s.schedule[0] : null;
+      const text = s.kind === "loop"
+        ? `⟲ loop ${st ? `×${st.repetitions} · ${st.beats} beat${st.beats === 1 ? "" : "s"}` : `(${s.schedule.length} steps)`} from ${s.from}`
+        : `→ ${s.from}`;
+      tag(text, a + 2, lane.top + 2, seg);
+    }
+  }
+  let y = lane.top + lane.h - 17, lastX = -1e9;
+  for (const c of [...(deck.cues || [])].sort((p, q) => p.at - q.at)) {
+    const x = xOf(c.at);
+    if (x < x0 - 1 || x > x1 + 1) continue;
+    ctx.fillStyle = css("--cue"); ctx.fillRect(Math.round(x) - 1, lane.top, 2, lane.h);
+    y = x - lastX < 120 ? y - 17 : lane.top + lane.h - 17;  // stack labels that would overlap
+    tag(`⚑ ${c.name}`, x + 2, y, css("--cue"));
+    lastX = x;
+  }
+}
+
+// Loop controls (one row per loop in view): length and repetitions. A loop
+// change moves audio, so it goes straight into the plan file and the decks
+// re-render.
+function renderLoops() {
+  const box = $("loops"); box.textContent = "";
+  const loops = [];
+  for (const d of item.decks) for (const s of d.segments || []) if (s.kind === "loop") loops.push([d, s]);
+  box.hidden = !loops.length;
+  for (const [d, s] of loops) {
+    const row = document.createElement("span"); row.className = "nums";
+    const st = s.schedule.length === 1 ? s.schedule[0] : null;
+    row.append(`⟲ Loop on ${d.label} from ${s.from}: `);
+    if (!st) { row.append(`${s.schedule.length} steps — edit them in the plan`); box.append(row); continue; }
+    const len = document.createElement("select"); len.title = "How much of the track each pass repeats (track beats)";
+    for (const b of [0.5, 1, 2, 4, 8, 16, 32]) { const o = document.createElement("option"); o.value = b; o.textContent = `${b} beat${b === 1 ? "" : "s"}`; len.append(o); }
+    if (![0.5, 1, 2, 4, 8, 16, 32].includes(st.beats)) { const o = document.createElement("option"); o.value = st.beats; o.textContent = `${st.beats} beats`; len.append(o); }
+    len.value = st.beats;
+    const reps = document.createElement("input"); reps.type = "number"; reps.min = 1; reps.max = 64; reps.value = st.repetitions;
+    reps.style.width = "4em"; reps.title = "How many times it plays";
+    const apply = document.createElement("button"); apply.textContent = "Apply"; apply.disabled = true;
+    apply.title = "Write the new loop into the plan and re-render the decks (a few seconds)";
+    const changed = () => { apply.disabled = +len.value === st.beats && +reps.value === st.repetitions; };
+    len.onchange = changed; reps.oninput = changed;
+    apply.onclick = () => applyLoop(s.index, +len.value, +reps.value);
+    row.append(len, " × ", reps, " passes ", apply);
+    box.append(row);
+  }
+}
+async function applyLoop(index, beats, repetitions) {
+  if (dirty) { toast("Save (or undo) this transition's changes first: changing a loop re-renders the decks."); return; }
+  if (live) await stop();
+  setStatus("changing the loop…");
+  const res = await (await fetch("/loop", { method: "POST", body: JSON.stringify({ index, state: { beats, repetitions } }) })).json();
+  if (!res.ok) { setStatus(""); toast(res.issues.join(" · ")); return; }
+  $("loading").hidden = false;
+  await waitUntilRendered();
+  const keep = item.index;
+  await loadItem(keep);
+  setStatus("loop changed ✓ (saved in the plan)");
 }
 
 function drawLane(lane, deck, side) {
@@ -737,7 +825,7 @@ async function loadItem(index) {
   state = structuredClone(item.state);
   good = structuredClone(state);
   undoStack = []; redoStack = []; selected = null;
-  renderStemPick(); renderParams();
+  renderStemPick(); renderParams(); renderLoops();
   cursor = Math.max(0, plusBeats(blendStart(), -8) - item.start_sec);
   await requestPreview();
 }

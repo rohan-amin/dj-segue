@@ -200,6 +200,7 @@ Pulled forward from the architecture's open question. One engine, run block by b
 **Progress (2026-10-11):**
 - **W1 done:** `dj-segue words` — LRCLIB lyrics aligned to the vocals stem (torchaudio wav2vec2), checked against Whisper (faster-whisper large-v3-turbo); merged words, `confirmed` where Whisper heard them; cached in `.cache/words/`. Annotate shows a words lane and a follow-along lyrics panel.
 - **W2 done:** schema v0.10 word positions `{ "word", "nth", "edge", "offset" }` (track), `+ "in": segment` (mix, `swap_at`). Example: `examples/pgw_cil_know.plan.jsonc` (vocal handoff on a shared "know").
+- **Cues and tune markers (2026-10-11):** annotate marks named cues (`m`), which any plan can use as `{ "cue": name }`. Tune shows each deck's segments (jumps "→ cue: …"), loops (×N, a tick per pass; length and passes editable, written to the plan and re-rendered) and annotation cues.
 - Next: tune words strips (snap the swap to words); wordplay candidate finder; then the planner.
 
 **Scope in:**

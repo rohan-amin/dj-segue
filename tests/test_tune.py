@@ -438,3 +438,97 @@ def test_beats_follow_the_tempo_map(tmp_path) -> None:
     assert r["changes"]["start_at"] == {"after": "a_end", "offset": {"beats": -12}}
     assert r["changes"]["duration"] == {"beats": 12}
     assert r["changes"]["in"] == {"offset": {"beats": -12}, "duration": {"beats": 24}}
+
+
+# ---------------------------------------------------------------------------
+# T9: what plays on each deck (segments, loops, annotation cues); loop edits
+# ---------------------------------------------------------------------------
+
+LOOP_PLAN = """// loop plan
+{
+  "schema_version": "0.10",
+  "meta": { "mix_name": "t", "mix_tempo": 120 },
+  "tracks": {
+    "a": { "path": "a.wav", "bpm": 120 },
+    "b": { "path": "b.wav", "bpm": 120 }
+  },
+  "decks": { "1": {}, "2": {} },
+  "timeline": [
+    { "type": "play", "id": "a1", "deck": 1, "track": "a",
+      "from": { "beat": 0 }, "to": { "cue": "hit" }, "start_at": { "beat": 0 } },
+    { "type": "loop", "deck": 1, "track": "a", "from": { "cue": "hit" },
+      "schedule": [ { "length": { "beats": 4 }, "repetitions": 4 } ] },  // keep me
+    { "type": "play", "deck": 2, "track": "b", "from": { "beat": 0 }, "to": { "beat": 16 },
+      "start_at": { "after": "a1" } },
+    { "type": "play", "deck": 2, "track": "b", "from": { "beat": 40 }, "to": { "beat": 56 } },
+    { "type": "transition", "style": "crossfade", "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "a1" }, "duration": { "beats": 16 } }
+  ]
+}
+"""
+
+
+@pytest.fixture
+def loop_session(tmp_path):
+    from dj_segue.annotate import Annotation, Cue, annotation_path, file_sha1, save
+
+    rng = np.random.default_rng(2)
+    for name in ("a", "b"):
+        sf.write(tmp_path / f"{name}.wav", (0.2 * rng.standard_normal(60 * BEAT)).astype(np.float32),
+                 SR, subtype="FLOAT")
+        ann = Annotation(audio=f"{name}.wav", audio_sha1=file_sha1(tmp_path / f"{name}.wav"),
+                         bpm=120.0, anchor_sec=0.0, duration_sec=30.0)
+        ann.cues = [Cue("hit", 8.0)] if name == "a" else [Cue("drop", 21.0)]
+        save(ann, annotation_path(tmp_path / f"{name}.wav", tmp_path / "annotations"))
+    plan = tmp_path / "t.plan.jsonc"
+    plan.write_text(LOOP_PLAN)
+    s = TuneSession(plan, tmp_path)
+    s.load()
+    return s
+
+
+def test_decks_show_segments_loops_and_cues(loop_session) -> None:
+    s = loop_session
+    d = s.describe(s.items()[0].index)
+    assert s.preview(d["index"], d["state"])["ok"]  # a schema-0.10 plan previews
+    a, b = d["decks"]
+    ga, gb = s.grids["a"].anchor_sec, s.grids["b"].anchor_sec  # beat 0 of each track
+    hit = 8.0 - ga  # a plays from its beat 0 at mix 0, to the cue
+    loop = [x for x in a["segments"] if x["kind"] == "loop"][0]
+    assert loop["from"] == "cue:hit" and loop["schedule"] == [{"beats": 4, "repetitions": 4}]
+    assert loop["reps"] == pytest.approx([hit, hit + 2, hit + 4, hit + 6])
+    assert [c["name"] for c in a["cues"]] == ["hit"] and a["cues"][0]["at"] == pytest.approx(hit)
+    jump = [x for x in b["segments"] if x["from"] == "beat 40"][0]
+    assert jump["start"] == pytest.approx(hit + 8.0)
+    # b's "drop" (track 21 s) plays in the jumped-to part (from its beat 40).
+    assert [c["name"] for c in b["cues"]] == ["drop"]
+    assert b["cues"][0]["at"] == pytest.approx(hit + 8.0 + 21.0 - (gb + 20.0))
+
+
+def test_loop_edit_writes_the_plan_and_rerenders(loop_session) -> None:
+    import time
+
+    s = loop_session
+    assert not s.set_loop(1, 4, 0)["ok"]
+    assert s.set_loop(1, 2, 3)["ok"]
+    for _ in range(200):
+        if s.progress["ready"]:
+            break
+        time.sleep(0.05)
+    assert s.progress["ready"]
+    text = s.plan_path.read_text()
+    assert '"beats": 2' in text and '"repetitions": 3' in text
+    assert "// keep me" in text and "// loop plan" in text  # the rest of the file as it was
+    loop = [x for x in s.describe(s.items()[0].index)["decks"][0]["segments"] if x["kind"] == "loop"][0]
+    assert loop["schedule"] == [{"beats": 2, "repetitions": 3}]
+    assert loop["end"] - loop["start"] == pytest.approx(3.0)  # 3 passes of 2 beats at 120
+
+
+def test_a_fade_may_run_across_a_jump(loop_session) -> None:
+    """b plays its beats 0–16, then jumps to 40: one stretch of playing, so
+    a fade-in may run past the jump."""
+    s = loop_session
+    d = s.describe(s.items()[0].index)
+    state = d["state"]
+    state["in"]["end"] += 1.0  # 2 beats into the jumped-to part
+    assert s.preview(d["index"], state)["ok"]
