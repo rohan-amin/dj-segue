@@ -113,7 +113,9 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 
 **T4 — Jump points.** A jump = two back-to-back segments on one deck. Drag the outgoing `to` and incoming `from` along track beats (snap); play across the jump with pre/post-roll; region re-render (includes the jump seam).
 
-**T5 — Loop points.** Drag a loop's `from`; edit its `schedule` (length, repetitions) in a small table; play the loop with pre-roll; region re-render.
+**T5 — Loop points.** Drag a loop's `from`; edit its `schedule` (length, repetitions) in a small table; play the loop with pre-roll; region re-render. **Partly done 2026-10-11 (T9 below):** a single-step loop's length and passes are edited on the page (written to the plan at once, decks re-render). Dragging `from` still open.
+
+**T9 — What plays on each deck.**  (DONE 2026-10-11) Deck lanes show segment starts / jumps ("→ cue: everybody"), loops (shaded, ×N, a tick per pass) and the cues marked in each track's annotation. Fades may run across back-to-back segments (a jump). Fixed: tune couldn't preview schema-0.10 plans.
 
 **T7 — EQ, filter and echo out.**  (DONE 2026-10-03)
 - Echo outs are items: drag the cut (tail and incoming fade move with it) and the tail's end; `every` / feedback / high-pass controls; the incoming deck's hard entry drags into a fade (`in`).

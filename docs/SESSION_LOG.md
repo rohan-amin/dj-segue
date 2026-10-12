@@ -466,3 +466,60 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Pages read their HTML once at server start: restart `tune` / `annotate` after editing a page.
 - A dirty page with a `beforeunload` guard blocks `tabs_close` in browser tests (a "Leave site?" dialog the user must dismiss) — save or reload before closing test tabs.
 - Click into a page before sending keys from the browser tool; clicks made before an item finishes loading get reset.
+
+## Session: 2026-10-11 (A1 annotations, transitions, M6 W1/W2/W4: word timing, word positions, finder; cues; tune markers)
+
+**Milestone:** A1 — Annotations (two more tracks); M6 — Word timing and the planner (W1, W2, W4 done); M4.5 tune (T9 markers, loop edits)
+**Duration:** approximately 150 turns
+**Worked on:** finished annotating four tracks, built three transitions, then word timing → word positions in plans → a wordplay finder, plus cue points and tune deck markers.
+
+### Completed
+- **Annotations** for Crazy in Love, Pretty Girls Walk (`1d061ad`), Everybody (Backstreet's Back) (Extended) and Let's Get It Started (Spike Mix) (`1873791`). New labels `interlude` (0) and `riff` (-).
+- **A1 test transitions** planned from the annotations (Pretty Girls Walk → Crazy in Love): `examples/pgw_cil.plan.jsonc` (horn drop on the vocals-only pre-hook bar, echo out) and `examples/pgw_cil_beatswitch.plan.jsonc` (PGW's verse vocal over CIL's looped interlude, by stems). **User rated both B / B+** ("not bad for a first try").
+- **Live loop fix** (`38fdbad`): a loop segment rendered its whole span (×4 stems, stretched) inside one live block — a ~1.6 s dropout in tune. Loops now build in the background `LOOP_PREBUILD_SEC` (4 s) ahead. Bit-identical output.
+- **renders/** (git-ignored) holds all rendered WAVs; old renders moved there from `audio/`.
+- **M6 W1 `dj-segue words`** (`437aeeb`): LRCLIB lyrics (line-timed or plain) force-aligned to the separated vocals with torchaudio's wav2vec2 (no WhisperX: it would downgrade PyTorch), checked against faster-whisper large-v3-turbo (greedy, repetition penalty 1.15, no VAD): lyric words `confirmed` when Whisper heard them within 0.25 s; Whisper-only words in gaps added (ad-libs). Cached per step in `.cache/words/<file sha1>/`. Cross-check vs Whisper's own times: median ~10 ms.
+- **Annotate shows lyrics** (`f5b5de8`, `74f30d6`): words lane under the zoomed waveform, follow-along lyrics panel (click a word to jump). User: "the lyrics looked pretty good".
+- **M6 W2, schema v0.10 word positions** (`168a3f9`): `{word, nth, edge, offset}` in track positions; `+ "in": <play segment>` in mix positions and a handoff's `swap_at`. Example `examples/pgw_cil_know.plan.jsonc` (handoff on a shared "know", 71 ms into the outgoing word) — **not yet listened to / rated**.
+- **Cue points in annotate** (`665b46d`): `m` marks a named cue (snapped; ⇧M exact), stored as seconds in the annotation; any plan can use `{ "cue": name }` without declaring it.
+- **LGIS → Everybody** (`4166042`, `53eec1e`): the user's design — play LGIS to its "everybody" cue, loop 4 beats ×4 while Everybody's first 15 beats crossfade in, jump to Everybody's "everybody" pickup (hook on the downbeat); whole mix at 108.06. **User: "that sounded perfect."**
+- **Tune T9** (`c9936fb`): deck lanes show segment starts / jumps, loops (×N, a tick per pass) and annotation cues; loop length and passes editable (written to the plan, re-rendered).
+- **`dj-segue prepare`** (`25c89df`): beats, stems, words and an annotation draft for new tracks in one step (existing annotations kept).
+- **M6 W4 finder `dj-segue find a b`** (`571c985`): same words / phrases, sound-alikes, rhymes (CMU dictionary), ranked by match, prominence, reliability (a cue named after the word counts as verified) and beat-of-bar fit; suggests vocal handoff / loop and jump / echo out. Ranks "everybody" first for LGIS → Everybody at the user's cue, with loop and jump suggested. Across the four tracks it also found "walk" (LGIS ↔ Pretty Girls Walk, a title word) and "Roc"/"rock" (Crazy in Love ↔ Everybody).
+- Housekeeping: deleted the unused Whisper large-v3 model (2.9 GB, `~/.cache/huggingface`); milestones M5 note fixed.
+
+### Tests
+- 395 passed, 0 failed (~2.5 min). Up from 353.
+- New: test_words (12), test_v010_words (12), test_prepare (3), test_finder (7); additions to test_live (loop prebuild), test_annotate (words endpoint, cues ×3), test_tune (markers, loop edit, fade across a jump, 0.10 preview), test_time_math / test_validator (cue fallback).
+
+### Schema or interface changes
+- **Schema v0.10** (additive, `docs/schema-v0.10.md`): word positions; rule 18; rule 4 amended (an undeclared cue resolves from the track's annotation, checked after preprocessing); rule 17 (no tempo change at a word).
+- `TrackGrid` gained `words` and `cues` (not part of equality); the preprocessor fills them for tracks that need them (`PreprocessResult.words` / `.cues`).
+- `resolve_timeline` anchors are an `Anchors` dict with `.clocks` (play segment id → `SegmentClock`, track → mix seconds).
+- Annotation JSON gained `cues: [{name, second, note}]`; `summary()` lists cues.
+- New CLI commands: `words`, `prepare`, `find`. New packages/modules: `dj_segue.words`, `dj_segue.prepare`, `dj_segue.finder`. Annotate server: `GET /words`; tune server: `POST /loop`.
+- Tune's schema version list is derived from `SUPPORTED_SCHEMA_VERSIONS` (it had stopped at 0.9).
+
+### Dependencies added/removed
+- New optional extra `words`: `faster-whisper`, `mutagen`, `pronouncing` (CMU dictionary). Uses the existing torchaudio for alignment. Whisper turbo weights (~1.6 GB) download on first use.
+
+### Open questions
+- **Keys and grids are unchecked on all four annotated tracks.** Crazy in Love says G minor at "100%" vs published D minor; Pretty Girls Walk 17% confidence. The finder's key notes say "unchecked".
+- **M3 acceptance** ("vocals end on a word, the other's start on the same word, drums continuing"): `pgw_cil_know` is the candidate; needs a listen and rating.
+- **A1 acceptance**: the user's B / B+ — pass or not? User's call.
+- Whisper skips chants (the repetition penalty), so chant sections stay unconfirmed; and word timing can't be corrected by hand yet (the aligned "everybody" in Everybody was 1.3 beats off the user's cue).
+- Tune can't yet drag jump points (T4), a loop's `from` (T5), or fades that move audio (T2); no words strip in tune.
+
+### Next session should
+- **Templates:** turn a finder candidate into a plan (vocal handoff, loop and jump, echo out on the word), then a **blind proposal** — e.g. "walk" (LGIS → Pretty Girls Walk) or "Roc"/"rock" (Crazy in Love → Everybody) — built without the user's input, for the user to rate.
+- Before relying on keys: the user checks grid and key on the four tracks (annotate, Drone).
+- Listen to and rate `pgw_cil_know` (M3 acceptance).
+
+### Notes for future sessions
+- **A `.beats` sidecar's `grid_anchor_sec` is the raw beat phase, not the plan's beat 0** (beat 0 adds the downbeat shift). `dj-segue preprocess <plan>` prints the real "beat 0 @ … ms"; annotation bar N = plan bar N. Misreading this cost a stuttering render (memory: beats-anchor-is-raw-phase).
+- Render to `renders/<plan>.wav` (git-ignored), not a scratch folder.
+- **Lyrics never in output**: tools print counts and single words only; lyrics stay in `.cache/words/`. Single cue words in plans are fine.
+- Verify a feature in the real pages, not just by loading: tune *loaded* a 0.10 plan but couldn't *preview* one (hard-coded version list). Browser checks caught three page bugs today (cue rows not attached, focus lookup, lyric scroll measuring against the page).
+- Whisper: turbo + `repetition_penalty=1.15`, no VAD, greedy — large-v3 with beam search was 15× slower and no better; turbo without the penalty looped (one word ×203); VAD gating skipped whole verses.
+- A loop's live render is built ahead (4 s); seeking to <~2 s before a loop can still stall briefly.
+- The browser tool's tabs are hidden: `requestAnimationFrame` doesn't run, so call page functions directly when testing.

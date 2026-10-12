@@ -73,7 +73,8 @@ Before any audio plays, every track in the plan must have:
 - BPM and beat grid (`<track>.beats` JSON cache)
 - Detected key (`<track>.beats` JSON cache, same file)
 - Stems separated and saved as `.npy` (if stems are referenced)
-- Cue points loaded (`<track>.cue` JSON sidecar)
+- Cue points: declared in the plan, or marked in the track's annotation (`annotations/<track>.json`, `dj-segue annotate`)
+- Word timing, for plans with word positions (`.cache/words/<file sha1>/`: LRCLIB lyrics aligned to the vocals stem, checked against Whisper)
 
 The preprocessor populates caches if missing; the player verifies they exist and aborts cleanly if not. No `time.sleep(0.3)` waits for analysis to complete.
 
@@ -135,6 +136,12 @@ src/dj_segue/
 │   │   └── ringbuffer.py# lock-free ring buffer (port of ring_buffer.py)
 │   └── mixxx/
 │       └── bridge.py    # MIDI bridge to Mixxx (later milestone)
+├── annotate/            # track annotations (sections, key, cues) + the annotate page
+├── words/               # word timing: lrclib, align (wav2vec2), transcribe (Whisper), merge
+├── tune/                # the tune page (transitions by ear; live playback)
+├── scrub/               # the scrub page (find beats by ear)
+├── prepare.py           # a new track ready in one step (beats, stems, words, annotation)
+├── finder.py            # wordplay candidates between two tracks (first piece of the planner)
 ├── inspect/
 │   └── pretty.py        # human-readable plan summaries
 ├── cli/
@@ -181,6 +188,7 @@ Pinned in `pyproject.toml`. Approximate set:
 | Time-stretch         | Rubber Band library (system install), streaming, via ctypes |
 | Effects (EQ/filter)  | `pedalboard` (Spotify) and/or `scipy.signal` |
 | Stem separation      | `demucs` (optional, behind a flag) |
+| Word timing          | `faster-whisper`, `mutagen`, `pronouncing` (optional `words` extra); alignment via `torchaudio` |
 | Schema validation    | `pydantic` v2             |
 | CLI                  | `typer`                    |
 | Tests                | `pytest`, `pytest-asyncio`|
