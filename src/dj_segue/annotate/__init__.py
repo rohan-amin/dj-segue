@@ -12,6 +12,10 @@ The result is one JSON file per track in `annotations/` (see
 planner reads: phrases with their energy and what's playing, the key, and
 instrumental runs (where a mix can go in or out without vocals clashing).
 
+Cues are named points you mark (`m` on the page): stored as exact seconds,
+so re-gridding never moves them. A plan's `{"cue": name}` finds them when
+the plan doesn't declare that cue itself.
+
 Bars are on the annotation's own grid: bar N starts at beat 4N, beat 0 =
 the first downbeat — the numbers a plan uses (with the annotation's bpm
 declared on the track, if it differs from the detected one).
@@ -58,6 +62,15 @@ class Phrase:
 
 
 @dataclass
+class Cue:
+    """A named point in the track, marked on the page."""
+
+    name: str
+    second: float  # exact file time (on a beat if it was snapped)
+    note: str = ""
+
+
+@dataclass
 class Annotation:
     audio: str  # path as given (relative to the project, usually)
     audio_sha1: str
@@ -76,6 +89,7 @@ class Annotation:
     bars: dict[str, list[float]] = field(default_factory=dict)
     breaks: list[list[int]] = field(default_factory=list)  # [first bar, end bar)
     suggestions: list[int] = field(default_factory=list)  # detected section starts (bars)
+    cues: list[Cue] = field(default_factory=list)  # in time order
     version: int = VERSION
 
     @property
@@ -93,6 +107,7 @@ class Annotation:
     def from_json(cls, data: dict) -> "Annotation":
         data = dict(data)
         data["phrases"] = [Phrase(**p) for p in data.get("phrases", [])]
+        data["cues"] = [Cue(**c) for c in data.get("cues", [])]
         return cls(**data)
 
 
@@ -293,6 +308,9 @@ def summary(ann: Annotation) -> dict:
             "energy": mean("energy", a, b),
             **{s: mean(s, a, b) for s in STEMS if s in ann.bars},
         })
+    def beat_of(sec: float) -> float:
+        return (sec - ann.anchor_sec) * ann.bpm / 60.0
+
     vocals = ann.bars.get("vocals", [])
     runs, start = [], None
     for i, v in enumerate(vocals + [1.0]):
@@ -317,4 +335,39 @@ def summary(ann: Annotation) -> dict:
         "phrases": phrases,
         "no_vocals": runs,
         "breaks": [f"bars {a}–{b - 1}" for a, b in ann.breaks],
+        "cues": [
+            {"name": c.name, "beat": round(beat_of(c.second), 2), "bar": int(beat_of(c.second) // 4),
+             "second": round(c.second, 3), **({"note": c.note} if c.note else {})}
+            for c in ann.cues
+        ],
     }
+
+
+def clean_cues(raw: list[dict], duration_sec: float) -> list[Cue]:
+    """Cues from the page: names trimmed, non-empty and unique; times
+    inside the track; in time order."""
+    cues, seen = [], set()
+    for c in raw:
+        name = str(c.get("name", "")).strip()
+        if not name:
+            raise ValueError("a cue needs a name")
+        if name in seen:
+            raise ValueError(f"two cues are called {name!r}")
+        seen.add(name)
+        sec = float(c["second"])
+        if not 0 <= sec <= duration_sec:
+            raise ValueError(f"cue {name!r} at {sec:.2f}s is outside the track")
+        cues.append(Cue(name, round(sec, 4), str(c.get("note", ""))))
+    return sorted(cues, key=lambda c: c.second)
+
+
+def annotation_cues(audio_path: Path, folder: Path = Path("annotations")) -> dict[str, float] | None:
+    """name → second from the track's annotation, or None when there's no
+    annotation for this exact file (one for a different version doesn't count)."""
+    path = annotation_path(audio_path, folder)
+    if not path.exists():
+        return None
+    ann = load(path)
+    if ann.audio_sha1 != file_sha1(audio_path):
+        return None
+    return {c.name: c.second for c in ann.cues}

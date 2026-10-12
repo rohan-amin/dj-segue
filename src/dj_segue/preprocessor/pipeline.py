@@ -69,6 +69,9 @@ class PreprocessResult:
     # v0.10: sung words per track whose word positions the plan uses
     # ((normalized text, start, end), from `dj-segue words`).
     words: dict[str, tuple] = field(default_factory=dict)
+    # Cues marked in annotations (name → second), for tracks whose plan
+    # uses a cue it doesn't declare.
+    cues: dict[str, dict] = field(default_factory=dict)
 
     def grids(self) -> dict[str, TrackGrid]:
         """Resolved fixed beat grid per track.
@@ -80,7 +83,7 @@ class PreprocessResult:
         declared bpm and no detectable beat.
         """
         return {
-            tid: replace(ta.grid, words=self.words[tid]) if tid in self.words else ta.grid
+            tid: replace(ta.grid, words=self.words.get(tid, ()), cues=self.cues.get(tid, {}))
             for tid, ta in self.tracks.items()
         }
 
@@ -118,7 +121,32 @@ def preprocess(plan: Plan, audio_root: Path) -> PreprocessResult:
         cached_count=cached,
         analyzed_count=analyzed,
         words={tid: load_words(plan, tid, audio_root) for tid in sorted(word_tracks(plan))},
+        cues={tid: c for tid in sorted(_undeclared_cue_tracks(plan))
+              if (c := _annotation_cues(plan, tid, audio_root))},
     )
+
+
+def _undeclared_cue_tracks(plan: Plan) -> set[str]:
+    from dj_segue.schema.plan import CuePos
+
+    return {
+        seg.track for seg in plan.timeline
+        for pos in (getattr(seg, "from_", None), getattr(seg, "to", None))
+        if isinstance(pos, CuePos) and seg.track in plan.tracks
+        and pos.cue not in plan.tracks[seg.track].cues
+    }
+
+
+def _annotation_cues(plan: Plan, tid: str, audio_root: Path) -> dict:
+    """Cues marked in the track's annotation (`annotations/`, next to where
+    `dj-segue annotate` saves by default), for this exact audio file."""
+    from dj_segue.annotate import annotation_cues
+
+    track = plan.tracks[tid]
+    if "full" not in track.stems:
+        return {}
+    audio = (Path(audio_root) / track.stems["full"]).resolve()
+    return annotation_cues(audio, Path(audio_root) / "annotations") or annotation_cues(audio) or {}
 
 
 def load_words(plan: Plan, tid: str, audio_root: Path) -> tuple:

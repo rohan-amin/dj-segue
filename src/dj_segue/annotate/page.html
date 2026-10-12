@@ -79,6 +79,10 @@
   #lyrics .w.weak { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
   #lyrics .w.now { background: var(--accent); color: #fff; }
   .wkey span { margin-right: 12px; }
+  #cueRows td { white-space: nowrap; }
+  #cueRows input[type=text].name { width: 170px; font-weight: 600; }
+  #cueRows .del { color: var(--bad); }
+  :root { --cue: #e0457b; }
   #toast { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 12px;
            border-radius: 8px; background: var(--panel); border: 1px solid var(--bad); color: var(--bad);
            box-shadow: 0 2px 10px rgba(0,0,0,.15); }
@@ -127,6 +131,15 @@
       <button id="loopP" title="Loop the selected phrase (l)">Loop phrase</button>
       <button id="click" title="Metronome on the grid (c) — the high click is the downbeat">Click</button>
     </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">Cues</h2>
+      <button id="markCue" title="Mark a cue at the nearest beat to what you're hearing (m). ⇧M marks the exact moment.">⚑ Mark cue here</button>
+      <span class="keys">Name a point anything ("drop", "clean_exit"); plans use it as <kbd>{ "cue": "drop" }</kbd>. <kbd>m</kbd> snaps to the beat · <kbd>⇧M</kbd> exact moment</span>
+    </div>
+    <table style="margin-top:6px"><tbody id="cueRows"></tbody></table>
   </div>
 
   <div class="panel" id="lyricsPanel" hidden>
@@ -204,7 +217,7 @@
   <p class="keys">
     <kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> beat · <kbd>↓</kbd><kbd>↑</kbd> bar · <kbd>n</kbd><kbd>p</kbd> phrase ·
     <kbd>1</kbd>–<kbd>0</kbd>, <kbd>-</kbd> label / tap a phrase · <kbd>s</kbd> split · <kbd>⌫</kbd> merge with previous · <kbd>⇧⌫</kbd> merge with next · <kbd>l</kbd> loop phrase ·
-    <kbd>c</kbd> click · <kbd>⌘S</kbd> save · <kbd>⌘Z</kbd> undo
+    <kbd>c</kbd> click · <kbd>m</kbd> mark cue (<kbd>⇧M</kbd> exact) · <kbd>⌘S</kbd> save · <kbd>⌘Z</kbd> undo
   </p>
 </main>
 
@@ -226,6 +239,7 @@ let buf = null, clickBuf = null, ctx = null, master = null, clickGain = null, dr
 let src = null, clickSrc = null, drone = [];
 const st = { playing: false, offset: 0, startCtx: 0, startOff: 0, loop: null, click: false };
 let dragB = null;       // boundary drag: {i, x0}
+let cues = [];          // [{name, second, note}] — named points, saved with the annotation
 let WT = null;          // word timing from `dj-segue words`: {words: [{text, start, end, score, source, confirmed, line}], …}
 let wordSpans = [];     // the lyrics panel's word elements, by word index
 let nowWord = -1;       // index of the word being heard (or the last one before it)
@@ -402,7 +416,7 @@ async function post(path, body) {
 }
 function body() {
   return { phrases, key: $("key").value, key_checked: A.key_checked, grid_checked: A.grid_checked,
-           tags: $("tags").value.split(","), notes: $("notes").value };
+           tags: $("tags").value.split(","), notes: $("notes").value, cues };
 }
 async function save() {
   $("status").textContent = "saving…";
@@ -431,6 +445,59 @@ async function setGrid(bpm, anchor) {
 function toast(text) {
   $("toast").textContent = text; $("toast").hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => ($("toast").hidden = true), 6000);
+}
+
+// ---------------------------------------------------------------- cues
+function cueName() { let n = cues.length + 1; while (cues.some((c) => c.name === `cue ${n}`)) n++; return `cue ${n}`; }
+function markCue(exact) {
+  const t = heard(), sec = exact ? t : Math.max(0, secOf(Math.round(beatAt(t))));
+  const cue = { name: cueName(), second: +sec.toFixed(4), note: "" };
+  cues.push(cue);
+  cues.sort((a, b) => a.second - b.second);
+  cueChanged();
+  const i = cues.indexOf(cue);
+  const input = document.querySelector(`#cueRows tr:nth-child(${i + 1}) input.name`);
+  if (input) { input.focus(); input.select(); }  // type its name right away
+}
+function cueChanged() { dirty = true; $("dirty").hidden = false; renderCues(); }
+function renderCues() {
+  const tb = $("cueRows"); tb.textContent = "";
+  if (!cues.length) { tb.innerHTML = '<tr><td class="keys">No cues yet — play the track and press <kbd>m</kbd> where you want one.</td></tr>'; return; }
+  cues.forEach((c, i) => {
+    const tr = document.createElement("tr"), b = beatAt(c.second);
+    tb.append(tr);
+    const cell = (...els) => { const td = document.createElement("td"); td.append(...els); tr.append(td); return td; };
+    const btn = (text, title, fn, cls = "") => { const x = document.createElement("button"); x.textContent = text; x.title = title; x.className = cls; x.onclick = fn; return x; };
+    cell(btn("▶", "Jump here (and play from here)", () => { gotoSec(Math.max(0, c.second - 0.05)); if (!st.playing) start(Math.max(0, c.second - 0.05)); }));
+    const name = document.createElement("input"); name.type = "text"; name.className = "name"; name.value = c.name; name.title = "The cue's name: plans use it as { \"cue\": \"…\" }";
+    name.onchange = () => {
+      const v = name.value.trim();
+      if (!v || cues.some((o, j) => j !== i && o.name === v)) { toast(v ? `There's already a cue called "${v}"` : "A cue needs a name"); name.value = c.name; return; }
+      c.name = v; cueChanged();
+    };
+    cell(name);
+    const onBeat = Math.abs(b - Math.round(b)) < 0.01;
+    cell(document.createTextNode(`bar ${Math.floor(b / 4)} · beat ${onBeat ? Math.round(b) : b.toFixed(2)} · ${c.second.toFixed(2)} s`)).className = "nums";
+    cell(btn("−1 beat", "Move it a beat earlier", () => { c.second = +Math.max(0, c.second - beatSec()).toFixed(4); cueChanged(); }),
+         btn("+1 beat", "Move it a beat later", () => { c.second = +Math.min(A.duration_sec, c.second + beatSec()).toFixed(4); cueChanged(); }),
+         btn("Here", "Move it to what you're hearing, snapped to the beat", () => { c.second = +Math.max(0, secOf(Math.round(beatAt(heard())))).toFixed(4); cueChanged(); }));
+    const note = document.createElement("input"); note.type = "text"; note.value = c.note; note.placeholder = "note (optional)";
+    note.oninput = () => { c.note = note.value; dirty = true; $("dirty").hidden = false; };
+    cell(note).style.width = "100%";
+    cell(btn("✕", "Delete this cue", () => { cues.splice(i, 1); cueChanged(); }, "del"));
+  });
+}
+function drawCueFlags(g, x, top, bottom, dpr, labels) {
+  g.font = `600 ${10 * dpr}px -apple-system, sans-serif`; g.textBaseline = "top";
+  for (const c of cues) {
+    const xx = Math.round(x(c.second));
+    if (xx < -50 || xx > g.canvas.width + 2) continue;
+    g.fillStyle = css("--cue"); g.fillRect(xx, top, 2 * dpr, bottom - top);
+    if (!labels) continue;
+    const w = g.measureText(c.name).width + 8 * dpr;
+    g.fillRect(xx, top, w, 14 * dpr);
+    g.fillStyle = "#fff"; g.fillText(c.name, xx + 4 * dpr, top + 2 * dpr);
+  }
 }
 
 // ---------------------------------------------------------------- drawing
@@ -507,6 +574,7 @@ function drawOverview() {
   // Detected section starts: small ticks under the lane.
   g.fillStyle = css("--muted");
   for (const b of A.suggestions) g.fillRect(x(barSec(b)) - dpr / 2, lane - 4 * dpr, dpr, 4 * dpr);
+  drawCueFlags(g, x, lane, lane + OV.wave * dpr, dpr, true);
   if (st.loop) { g.fillStyle = css("--loop"); g.fillRect(x(st.loop.a), 0, x(st.loop.b) - x(st.loop.a), H); }
   g.fillStyle = css("--accent"); g.fillRect(Math.round(x(heard())) - dpr, 0, 2 * dpr, H);
 }
@@ -544,6 +612,7 @@ function drawZoom() {
     }
   }
   if (WT) drawWordLane(g, x, t0, t1, H - laneH, laneH, dpr);
+  drawCueFlags(g, x, labelH, H - laneH, dpr, true);
   if (st.loop) { g.fillStyle = css("--loop"); g.fillRect(x(st.loop.a), labelH, x(st.loop.b) - x(st.loop.a), H); }
   g.fillStyle = css("--accent"); g.fillRect(Math.round(x(heard())) - dpr, labelH, 2 * dpr, H - labelH);
 }
@@ -738,6 +807,7 @@ function renderKey() {
 function load(data, regridded) {
   A = data;
   phrases = A.phrases.map((p) => ({ bar: p.bar, label: p.label, note: p.note }));
+  cues = (A.cues || []).map((c) => ({ name: c.name, second: c.second, note: c.note || "" }));
   selected = Math.min(selected, phrases.length - 1);
   $("title").textContent = A.audio.split("/").pop();
   document.title = `Annotate — ${$("title").textContent}`;
@@ -749,7 +819,7 @@ function load(data, regridded) {
   $("tags").value = A.tags.join(", "); $("notes").value = A.notes;
   if (regridded && buf) clickBuf = buildClickTrack();
   ovBase.key = zm.key = ""; lastBeat = null;
-  renderGrid(); renderKey(); renderPhrases();
+  renderGrid(); renderKey(); renderPhrases(); renderCues();
 }
 
 function frame() { if (buf) { updateReadout(); drawOverview(); drawZoom(); updateLyrics(); } requestAnimationFrame(frame); }
@@ -757,6 +827,7 @@ function frame() { if (buf) { updateReadout(); drawOverview(); drawZoom(); updat
 // ---------------------------------------------------------------- wiring
 function wire() {
   $("play").onclick = togglePlay;
+  $("markCue").onclick = (e) => markCue(e.shiftKey || e.altKey);
   for (const b of document.querySelectorAll("[data-seek]")) b.onclick = () => gotoBeat(currentBeat() + Number(b.dataset.seek));
   const jumpP = (d) => { const i = Math.max(0, Math.min(phrases.length - 1, phraseAt(Math.floor(currentBeat() / 4)) + d));
     selected = i; renderPhrases(); gotoSec(barSec(phrases[i].bar)); };
@@ -847,6 +918,7 @@ function wire() {
     else if (k === "p") $("prevP").onclick();
     else if (k === "l") loopPhrase();
     else if (k === "c") toggleClick();
+    else if (k === "m" || k === "M") markCue(e.shiftKey);
     else return;
     e.preventDefault();
   });

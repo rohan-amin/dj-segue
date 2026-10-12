@@ -60,7 +60,7 @@ def test_track_pos_resolves_cue_via_registry() -> None:
 
 def test_track_pos_unknown_cue_errors() -> None:
     track = _track(bpm=120.0, drop={"beat": 16})
-    with pytest.raises(ValueError, match="not declared"):
+    with pytest.raises(ValueError, match="isn't declared on the track or marked in its annotation"):
         track_pos_to_seconds(CuePos(cue="ghost"), track)
 
 

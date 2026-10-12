@@ -190,6 +190,7 @@ Top-level dict, keyed by an arbitrary handle (used everywhere else in the plan).
 - `key` is optional, used for compatibility checks and key-shifting decisions.
 - Cue handles are local to the track. `started.bottom_word` and `middle.bottom_word` don't collide.
 - Cue positions are track-relative.
+- **Cues marked in annotate (v0.10):** a `{ "cue": name }` that the plan doesn't declare is looked up in the track's annotation (`annotations/<audio file name>.json`, for that exact file), where `dj-segue annotate` saves the cues you mark (`m`). Those are stored as exact seconds, so moving the annotation's grid never moves them. A cue declared in the plan wins over a marked one of the same name.
 
 ---
 
@@ -444,7 +445,7 @@ Any keyframe `value` may itself be a constant or a reference to another automati
 1. `schema_version` must match a supported version.
 2. Every `track` referenced in the timeline must be declared in `tracks`.
 3. Every `deck` referenced anywhere must be declared in `decks`.
-4. Every `cue` reference must resolve in the relevant track's cue registry.
+4. Every `cue` reference must resolve in the relevant track's cue registry, or (v0.10) among the cues marked in its annotation — checked after preprocessing.
 5. No two segments on the same deck overlap.
 6. Track positions (`from`/`to` in `play` segments) must fall within the track's actual duration.
 7. Keyframes within a lane are time-ordered.
@@ -540,6 +541,7 @@ A plan declaring `"schema_version"` 0.1–0.8 may not use `tempo_map`.
 
 - Word positions `{"word", "nth", "edge", "offset"}`: in track positions, and with `in` (a play segment) in mix positions and a vocal_handoff's `swap_at`.
 - The preprocessor loads word timing (`dj-segue words`) for the tracks word positions need.
+- A cue the plan doesn't declare resolves from the cues marked in the track's annotation (rule 4 amended: before preprocessing such a cue passes).
 - Validation rules 17 (amended) and 18.
 
 A plan declaring `"schema_version"` 0.1–0.9 may not use word positions.

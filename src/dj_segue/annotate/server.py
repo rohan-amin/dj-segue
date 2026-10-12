@@ -4,7 +4,7 @@ GET  /             the page
 GET  /annotation   the annotation (+ "summary", "labels")
 GET  /audio        the track
 GET  /words        the track's word timing from `dj-segue words` ({"available": false} if not run)
-POST /save         {key, key_checked, grid_checked, tags, notes, phrases}
+POST /save         {key, key_checked, grid_checked, tags, notes, phrases, cues}
 POST /grid         {bpm, anchor_sec}: move to a new grid (re-measures bars)
 """
 
@@ -25,6 +25,7 @@ from dj_segue.annotate import (
     Phrase,
     _fix_lengths,
     camelot,
+    clean_cues,
     regrid,
     save,
     summary,
@@ -97,6 +98,8 @@ class AnnotateSession:
         ann.grid_checked = bool(body.get("grid_checked", ann.grid_checked))
         ann.tags = [str(t).strip() for t in body.get("tags", ann.tags) if str(t).strip()]
         ann.notes = str(body.get("notes", ann.notes))
+        if "cues" in body:
+            ann.cues = clean_cues(body["cues"], ann.duration_sec)
         save(ann, self.out_path)
 
     def regrid(self, bpm: float, anchor_sec: float) -> None:

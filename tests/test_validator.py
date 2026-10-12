@@ -42,10 +42,16 @@ def test_undeclared_deck_in_automation(minimal_plan_data) -> None:
 
 
 def test_unknown_cue_in_play_from(minimal_plan_data) -> None:
+    """An undeclared cue may be marked in the track's annotation, which is
+    known only after preprocessing (the grids carry it): it fails then."""
+    from dj_segue.time_math import TrackGrid
+
     minimal_plan_data["timeline"][0]["from"] = "no_such_cue"
     plan = _build(minimal_plan_data)
+    validate_plan(plan)
+    grids = {tid: TrackGrid(0.0, 120.0) for tid in plan.tracks}
     with pytest.raises(PlanValidationError) as exc:
-        validate_plan(plan)
+        validate_plan(plan, grids)
     assert any("no_such_cue" in m for m in exc.value.issues)
 
 

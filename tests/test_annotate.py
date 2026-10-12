@@ -199,3 +199,66 @@ def test_words_come_from_the_words_cache(served, tmp_path, monkeypatch) -> None:
     got = json.loads(urllib.request.urlopen(url + "/words").read())
     assert got["available"] and got["words"][0]["start"] == 1.0
     assert got["summary"]["confirmed"] == 1
+
+
+def test_cues_save_and_reach_the_planner(served) -> None:
+    session, url = served
+    res = _post(url, "/save", {"phrases": [{"bar": 0, "label": "intro"}],
+                               "cues": [{"name": " drop ", "second": 4.25, "note": "big"},
+                                        {"name": "early", "second": 1.0}]})
+    assert res["ok"]
+    saved = load(session.out_path)
+    assert [(c.name, c.second) for c in saved.cues] == [("early", 1.0), ("drop", 4.25)]  # trimmed, in order
+    cue = summary(saved)["cues"][1]
+    assert cue["name"] == "drop" and cue["note"] == "big"
+    assert cue["beat"] == pytest.approx((4.25 - saved.anchor_sec) * saved.bpm / 60, abs=0.01)
+    # Mistakes are refused, and nothing changes.
+    for bad in ([{"name": "a", "second": 1}, {"name": "a", "second": 2}],
+                [{"name": "", "second": 1}], [{"name": "late", "second": 1e6}]):
+        assert not _post(url, "/save", {"phrases": [], "cues": bad})["ok"]
+    assert len(load(session.out_path).cues) == 2
+
+
+def test_cues_stay_put_when_the_grid_moves(served) -> None:
+    session, url = served
+    _post(url, "/save", {"phrases": [], "cues": [{"name": "x", "second": 3.0}]})
+    _post(url, "/grid", {"bpm": session.ann.bpm, "anchor_sec": session.ann.anchor_sec + 0.1})
+    assert [c.second for c in load(session.out_path).cues] == [3.0]
+
+
+def test_a_plan_finds_cues_marked_in_the_annotation(track, tmp_path) -> None:
+    import shutil
+
+    from dj_segue.annotate import Cue, annotation_path
+    from dj_segue.compiler import resolve_timeline
+    from dj_segue.preprocessor import preprocess
+    from dj_segue.schema.plan import Plan
+    from dj_segue.schema.validator import PlanValidationError, validate_plan
+
+    root = tmp_path / "proj"
+    (root / "audio").mkdir(parents=True)
+    audio = root / "audio" / "t.wav"
+    shutil.copy(track, audio)
+    ann = draft(audio, "audio/t.wav", stems=fake_stems)
+    ann.cues = [Cue("in_here", 2.0), Cue("out_here", 6.5)]
+    save(ann, annotation_path(audio, root / "annotations"))
+
+    def plan(frm, to):
+        return Plan.model_validate({
+            "schema_version": "0.10", "meta": {"mix_name": "t", "mix_tempo": 120},
+            "tracks": {"t": {"path": "audio/t.wav", "bpm": 120, "cues": {"declared": {"second": 1.5}}}},
+            "decks": {"1": {}},
+            "timeline": [{"type": "play", "deck": 1, "track": "t", "from": frm, "to": to}],
+        })
+
+    p = plan({"cue": "in_here"}, "out_here")
+    validate_plan(p)  # before preprocessing an undeclared cue may be the annotation's
+    grids = preprocess(p, root).grids()
+    validate_plan(p, grids)
+    span = resolve_timeline(p, 120.0, grids).spans[0]
+    assert span.track_from_sec == 2.0 and span.mix_end_sec == pytest.approx(4.5)
+    # A plan's own cue still works; a name in neither is an error that lists both kinds.
+    p = plan("declared", "nope")
+    grids = preprocess(p, root).grids()
+    with pytest.raises(PlanValidationError, match="declared.*in_here.*out_here|marked in its annotation"):
+        validate_plan(p, grids)

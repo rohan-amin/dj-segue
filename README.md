@@ -27,7 +27,7 @@ dj-segue play       examples/fancy_likeem.plan.jsonc --watch --from 192   # edit
 dj-segue play       examples/crossfade_mix.plan.jsonc --render-to renders/out.wav
 dj-segue scrub      audio/some_track.mp3                # find beat numbers by ear
 dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by ear
-dj-segue annotate   audio/some_track.mp3                # mark phrases, key, notes (for planning)
+dj-segue annotate   audio/some_track.mp3                # mark phrases, key, cues, notes (for planning)
 dj-segue words      audio/some_track.mp3                # time every sung word (lyrics + Whisper)
 ```
 

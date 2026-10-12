@@ -61,6 +61,9 @@ class TrackGrid:
     # v0.10: the track's sung words, (normalized text, start s, end s) in
     # order — filled by the preprocessor when the plan uses word positions.
     words: tuple = field(default=(), compare=False, repr=False)
+    # Cues marked in the track's annotation (name → second): a plan's cue
+    # that the plan doesn't declare is looked up here.
+    cues: dict = field(default_factory=dict, compare=False, repr=False)
 
     @classmethod
     def fixed(cls, bpm: float, anchor_sec: float = 0.0) -> "TrackGrid":
@@ -391,9 +394,12 @@ def track_pos_to_seconds(
     if isinstance(pos, CuePos):
         cue = track.cues.get(pos.cue)
         if cue is None:
+            marked = grid.cues if grid is not None else {}
+            if pos.cue in marked:  # marked in the track's annotation
+                return float(marked[pos.cue])
             raise ValueError(
-                f"cue {pos.cue!r} not declared on track; "
-                f"available: {sorted(track.cues)}"
+                f"cue {pos.cue!r} isn't declared on the track or marked in its annotation; "
+                f"available: {sorted(set(track.cues) | set(marked))}"
             )
         if cue.second is not None:
             return float(cue.second)

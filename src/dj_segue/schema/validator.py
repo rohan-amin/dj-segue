@@ -70,7 +70,7 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
         mix_tempo = None
     issues.extend(_check_track_references(plan))
     issues.extend(_check_deck_references(plan))
-    issues.extend(_check_cue_references(plan))
+    issues.extend(_check_cue_references(plan, grids))
     issues.extend(_check_segment_ids(plan))
     issues.extend(_check_loop_schedules(plan))
     issues.extend(_check_stem_references(plan))
@@ -320,11 +320,13 @@ def _check_deck_references(plan: Plan) -> list[str]:
     return issues
 
 
-def _check_cue_references(plan: Plan) -> list[str]:
+def _check_cue_references(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = None) -> list[str]:
     """
     Cue refs are valid only in track-time positions (play.from / play.to).
     They're invalid in mix-time positions (start_at, automation at, transition
-    start_at).
+    start_at). A cue the plan doesn't declare may be marked in the track's
+    annotation: that's only known after preprocessing (`grids`), so before
+    it, undeclared cues pass.
     """
     issues: list[str] = []
     for i, seg in enumerate(plan.timeline):
@@ -338,12 +340,14 @@ def _check_cue_references(plan: Plan) -> list[str]:
                     if track is None:
                         # Track-ref error already reported elsewhere; skip here.
                         continue
-                    if pos.cue not in track.cues:
-                        issues.append(
-                            f"timeline[{i}] ({seg.type}): cue {pos.cue!r} "
-                            f"in '{field}' not declared on track {seg.track!r}; "
-                            f"available cues: {sorted(track.cues)}"
-                        )
+                    if pos.cue not in track.cues and grids is not None:
+                        marked = grids[seg.track].cues if seg.track in grids else {}
+                        if pos.cue not in marked:
+                            issues.append(
+                                f"timeline[{i}] ({seg.type}): cue {pos.cue!r} in '{field}' isn't "
+                                f"declared on track {seg.track!r} or marked in its annotation; "
+                                f"available cues: {sorted(set(track.cues) | set(marked))}"
+                            )
             if isinstance(seg.start_at, CuePos):
                 issues.append(
                     f"timeline[{i}] ({seg.type}): cue references not allowed in "
