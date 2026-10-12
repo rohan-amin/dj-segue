@@ -18,7 +18,7 @@ Schema v0.8. General mixing works: plans with crossfades, cuts, echo outs, vocal
 
 ```bash
 brew install rubberband          # time-stretching (Debian/Ubuntu: apt install librubberband-dev)
-pip install -e ".[dev,downbeats,stems]"   # `downbeats` and `stems` are optional (PyTorch)
+pip install -e ".[dev,downbeats,stems,words]"   # `downbeats`, `stems`, `words` are optional (PyTorch)
 
 dj-segue inspect    examples/crossfade_mix.plan.jsonc   # plan summary + validation
 dj-segue preprocess examples/crossfade_mix.plan.jsonc   # analyze tracks (tempo, beat grid)
@@ -28,7 +28,14 @@ dj-segue play       examples/crossfade_mix.plan.jsonc --render-to renders/out.wa
 dj-segue scrub      audio/some_track.mp3                # find beat numbers by ear
 dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by ear
 dj-segue annotate   audio/some_track.mp3                # mark phrases, key, notes (for planning)
+dj-segue words      audio/some_track.mp3                # time every sung word (lyrics + Whisper)
 ```
+
+`dj-segue words <file>` times every sung word: lyrics from LRCLIB (by the file's
+artist/title tags) aligned to the separated vocals, checked against a Whisper
+transcription (words Whisper also heard there are marked confirmed; ad-libs only
+Whisper heard are added). Results, lyrics included, stay in `.cache/words/`
+(git-ignored); the command prints counts, `--show` prints the words.
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
 track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`

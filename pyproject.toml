@@ -29,6 +29,13 @@ downbeats = [
 stems = [
     "demucs>=4.0",
 ]
+# Word timing (M6): lyrics from LRCLIB aligned to the vocals stem (torchaudio's
+# wav2vec2, from the PyTorch above; needs `stems`), checked against a Whisper
+# transcription. Whisper's weights (~1.6 GB) download on first use.
+words = [
+    "faster-whisper>=1.1",
+    "mutagen>=1.47",
+]
 dev = [
     "pytest>=8.0",
 ]

@@ -242,6 +242,39 @@ def annotate(
 
 
 @app.command()
+def words(
+    audio_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    artist: str | None = typer.Option(None, "--artist", help="Override the file's artist tag."),
+    title: str | None = typer.Option(None, "--title", help="Override the file's title tag."),
+    no_whisper: bool = typer.Option(
+        False, "--no-whisper", help="Lyrics only: skip Whisper's check (faster; nothing confirmed)."
+    ),
+    refresh: bool = typer.Option(False, "--refresh", help="Redo every step, ignoring the cache."),
+    show: bool = typer.Option(False, "--show", help="Print every word with its time."),
+) -> None:
+    """Time every sung word: lyrics from LRCLIB aligned to the vocals stem,
+    checked against Whisper. Cached in .cache/words."""
+    from dj_segue.words import summary, words_for
+
+    try:
+        wt = words_for(audio_path, artist=artist, title=title, whisper=not no_whisper,
+                       refresh=refresh, log=typer.echo)
+    except ImportError as e:
+        typer.echo(f"{e}\nword timing needs: pip install -e '.[stems,words]'", err=True)
+        raise typer.Exit(code=1)
+    s = summary(wt)
+    src = (f"LRCLIB {s['lyrics']['id']} ({'line-timed' if s['lyrics']['synced'] else 'plain'})"
+           if s["lyrics"] else "no lyrics found: Whisper only")
+    conf = (f", {s['confirmed']} confirmed by Whisper" if s["confirmed"] is not None else "")
+    typer.echo(f"{audio_path.name}: {s['words']} words — {src}; {s['from_lyrics']} from the "
+               f"lyrics{conf}, {s['whisper_only']} heard only by Whisper; {s['low_score']} weakly aligned")
+    if show:
+        for w in wt.words:
+            mark = "✓" if w.confirmed else ("+" if w.source == "whisper" else " ")
+            typer.echo(f"  {w.start:8.2f}  {mark} {w.text}")
+
+
+@app.command()
 def tune(
     plan_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     audio_root: Path = typer.Option(
