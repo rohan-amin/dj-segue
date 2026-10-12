@@ -34,6 +34,8 @@ from dj_segue.schema.plan import (
     StemVolumeLane,
     TransitionSegment,
     available_stems,
+    WordPos,
+    word_positions,
 )
 from dj_segue.constants import ANCHOR_TOLERANCE
 
@@ -79,6 +81,7 @@ def validate_plan(plan: Plan, grids: dict[str, time_math.TrackGrid] | None = Non
     issues.extend(_check_single_crossfader(plan))
     issues.extend(_check_eq_lanes(plan))
     issues.extend(_check_filter_lanes(plan))
+    issues.extend(_check_word_positions(plan, mix_tempo, grids))
     if issues:
         raise PlanValidationError(issues)
 
@@ -151,6 +154,9 @@ def resolved_tempo(
     def at_sec(change, tempo) -> float:
         if isinstance(change.at, CuePos):
             raise ValueError(f"cue {change.at.cue!r} is a track position; use a mix position")
+        if isinstance(change.at, WordPos):
+            raise ValueError("a tempo change can't be at a word (where words land depends on "
+                             "the tempo); use a beat or `after` position")
         anchors = None
         if isinstance(change.at, AfterPos):
             try:
@@ -206,7 +212,7 @@ def position_to_mix_beats(
 ) -> float:
     """Convert a mix-time position to mix-beats. Assumes 4/4 for bars.
     `after` positions need `anchors` (and the tempo)."""
-    if isinstance(pos, AfterPos):
+    if isinstance(pos, (AfterPos, WordPos)):
         sec = time_math.mix_pos_to_seconds(pos, mix_tempo, anchors)
         return time_math.as_tempo(mix_tempo).sec_to_beat(sec)
     if isinstance(pos, BeatPos):
@@ -223,6 +229,57 @@ def position_to_mix_beats(
 # ---------------------------------------------------------------------------
 # Individual checks
 # ---------------------------------------------------------------------------
+
+
+def _check_word_positions(
+    plan: Plan,
+    mix_tempo: "time_math.TempoMap | None",
+    grids: dict[str, time_math.TrackGrid] | None,
+) -> list[str]:
+    """v0.10 word positions: `in` only (and always) in mix positions, naming a
+    play segment; with grids (after preprocessing), each word resolves."""
+    issues: list[str] = []
+    found = list(word_positions(plan))
+    if not found:
+        return issues
+    kinds = {seg.id: seg.type for seg in plan.timeline if getattr(seg, "id", None)}
+    for where, pos, ctx in found:
+        if where.startswith("meta.tempo_map"):
+            continue  # reported with the tempo map
+        if ctx == "track" and pos.in_ is not None:
+            issues.append(f'{where}: "in" is for mix positions; a track word is in its own track')
+        elif ctx == "mix" and pos.in_ is None:
+            issues.append(f'{where}: a mix word position needs "in": the play segment that sings {pos.word!r}')
+        elif ctx == "mix" and kinds.get(pos.in_) != "play":
+            what = "no segment" if pos.in_ not in kinds else f"a {kinds[pos.in_]} segment"
+            issues.append(f'{where}: "in": {pos.in_!r} names {what}; it must name a play segment')
+    if issues or grids is None or mix_tempo is None:
+        return issues
+    from dj_segue.compiler import resolve_timeline  # compiler imports schema.plan
+
+    for i, seg in enumerate(plan.timeline):  # track words (from / to)
+        for name in ("from_", "to"):
+            pos = getattr(seg, name, None)
+            if isinstance(pos, WordPos):
+                try:
+                    time_math.word_sec(pos, grids.get(seg.track))
+                except ValueError as e:
+                    issues.append(f"timeline[{i}].{name.rstrip('_')}: {e}")
+    if issues:
+        return issues
+    try:
+        anchors = resolve_timeline(plan, mix_tempo, grids).anchors
+    except (ValueError, TypeError, KeyError) as e:
+        if any(w.endswith("start_at") for w, _, c in found if c == "mix"):
+            issues.append(f"timeline: {e}")
+        return issues
+    for where, pos, ctx in found:
+        if ctx == "mix" and not where.startswith("meta.tempo_map"):
+            try:
+                time_math.mix_pos_to_seconds(pos, mix_tempo, anchors)
+            except ValueError as e:
+                issues.append(f"{where}: {e}")
+    return issues
 
 
 def _check_track_references(plan: Plan) -> list[str]:
@@ -639,8 +696,11 @@ def _check_transitions(
                 f'{label}: cut is instantaneous; duration must be {{"beats": 0}}'
             )
         if seg.style == "vocal_handoff":
-            swap = time_math.handoff_swap(seg, mix_tempo, anchors)
-            if not start - 1e-9 <= swap <= start + duration + 1e-9:
+            try:
+                swap = time_math.handoff_swap(seg, mix_tempo, anchors)
+            except (ValueError, TypeError):
+                swap = None  # a word swap before preprocessing: re-checked with grids
+            if swap is not None and not start - 1e-9 <= swap <= start + duration + 1e-9:
                 issues.append(f"{label}: swap_at must be within the transition's duration")
         if seg.style == "echo_out":
             every = time_math.echo_window(seg, mix_tempo, anchors).every_sec

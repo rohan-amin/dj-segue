@@ -1,0 +1,59 @@
+// examples/pgw_cil_know.plan.jsonc
+//
+// Pretty Girls Walk into Crazy in Love, handing the vocal over on a shared
+// word (schema 0.10: word positions). Needs `dj-segue words` for both tracks
+// (the preprocessor runs it if it hasn't been) and your own copies of the
+// tracks in the git-ignored audio/ folder.
+//
+// Both songs sing "know" two beats into a bar: Pretty Girls Walk the 3rd
+// time (its verse, bar 13), Crazy in Love the 2nd (its second verse, bar 36).
+// With the bars lined up, the two words land within a tenth of a beat of
+// each other, so the drums stay on the grid and the vocal can switch voices
+// mid-word.
+//
+//   - Pretty Girls Walk from the top, at its own 90 bpm.
+//   - Crazy in Love comes in at its second verse (bar 32) on mix bar 9, so
+//     its bar 36 meets Pretty Girls Walk's bar 13; stretched to 90 for now.
+//   - Vocal handoff over those 8 bars: the instrumentals crossfade; the
+//     vocals switch on Crazy in Love's "know" — wherever that lands, from
+//     the word timing, not a hand-counted beat.
+//   - Then the mix ramps up to Crazy in Love's 99.26 over 8 bars, through
+//     its first-verse-two hook (to bar 50).
+
+{
+  "schema_version": "0.10",
+
+  "meta": {
+    "mix_name": "Pretty Girls Walk into Crazy in Love, on \"know\"",
+    "source_prompt": "W2 example: a vocal handoff that swaps on a word both songs sing",
+    "mix_tempo": 90,
+    "tempo_map": [
+      { "at": { "after": "swap" }, "bpm": 99.265, "ramp": { "bars": 8 } }
+    ]
+  },
+
+  "tracks": {
+    "pgw": { "path": "audio/01 - Pretty Girls Walk [Explicit].mp3" },
+    "cil": { "path": "audio/01 - Crazy In Love.mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "pgw" },
+    "2": { "label": "cil" }
+  },
+
+  "timeline": [
+    { "type": "play", "id": "pgw", "deck": 1, "track": "pgw",
+      "from": { "bar": 0 }, "to": { "bar": 18 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "cil", "deck": 2, "track": "cil",
+      "from": { "bar": 32 }, "to": { "bar": 50 }, "start_at": { "bar": 9 },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "id": "swap", "style": "vocal_handoff",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "bar": 9 }, "duration": { "bars": 8 },
+      "swap_at": { "word": "know", "nth": 2, "in": "cil" } }
+  ]
+}

@@ -12,7 +12,7 @@ changes resolve to the same seconds, bit for bit.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dj_segue.constants import ANCHOR_TOLERANCE  # noqa: F401  (re-exported)
@@ -28,6 +28,7 @@ from dj_segue.schema.plan import (
     SecondsDur,
     Track,
     TransitionSegment,
+    WordPos,
 )
 
 BEATS_PER_BAR = 4  # 4/4 assumption
@@ -57,6 +58,9 @@ class TrackGrid:
 
     anchor_sec: float
     bpm: float
+    # v0.10: the track's sung words, (normalized text, start s, end s) in
+    # order — filled by the preprocessor when the plan uses word positions.
+    words: tuple = field(default=(), compare=False, repr=False)
 
     @classmethod
     def fixed(cls, bpm: float, anchor_sec: float = 0.0) -> "TrackGrid":
@@ -297,7 +301,78 @@ def mix_pos_to_seconds(
         return float(pos.second)
     if isinstance(pos, CuePos):
         raise ValueError(f"Cue references are not valid in mix-time context: {pos!r}")
+    if isinstance(pos, WordPos):
+        if pos.in_ is None:
+            raise ValueError(f'a word in a mix position needs "in": the play segment that sings it ({pos.word!r})')
+        clock = getattr(anchors, "clocks", {}).get(pos.in_)
+        if clock is None:
+            raise ValueError(
+                f"word {pos.word!r} in {pos.in_!r}: no earlier play segment with that id "
+                f"(or the timeline isn't resolved yet)"
+            )
+        t = clock.mix_sec(word_sec(pos, clock.grid), pos)
+        return t if pos.offset is None else t + mix_duration(t, pos.offset, mix_tempo)
     raise TypeError(f"Unknown position type: {type(pos).__name__}")
+
+
+class Anchors(dict):
+    """Segment id → mix end seconds (what `after` positions need), plus
+    `clocks`: play segment id → its SegmentClock (what mix word positions
+    need, v0.10)."""
+
+    def __init__(self, *args, **kw) -> None:
+        super().__init__(*args, **kw)
+        self.clocks: dict[str, SegmentClock] = {}
+
+
+@dataclass(frozen=True)
+class SegmentClock:
+    """Where a play segment puts its track in the mix."""
+
+    grid: "TrackGrid | None"
+    from_sec: float  # track seconds it plays…
+    to_sec: float
+    start_sec: float  # …from this mix second
+    rate: float
+    warp: "Warp | None" = None
+
+    def mix_sec(self, track_sec: float, pos=None) -> float:
+        if not self.from_sec - 1e-6 <= track_sec <= self.to_sec + 1e-6:
+            what = f"word {pos.word!r} (nth {pos.nth})" if pos is not None else "that position"
+            raise ValueError(
+                f"{what} is sung at {track_sec:.2f}s in the track, outside the part segment "
+                f"{pos.in_ if pos is not None else ''!r} plays ({self.from_sec:.2f}–{self.to_sec:.2f}s)"
+            )
+        if self.warp is not None:
+            return self.warp.mix_sec(track_sec)
+        return self.start_sec + (track_sec - self.from_sec) / self.rate
+
+
+def word_sec(pos: WordPos, grid: "TrackGrid | None") -> float:
+    """Track seconds where `pos.word` (a word or phrase) is sung, its `nth`
+    time; its start, or with edge "end" the end of its last word."""
+    from dj_segue.words.merge import norm
+
+    words = grid.words if grid is not None else ()
+    if not words:
+        raise ValueError(
+            f"word {pos.word!r}: no word timing for this track (run `dj-segue words <audio file>`)"
+        )
+    target = [norm(t) for t in pos.word.split()]
+    target = [t for t in target if t]
+    if not target:
+        raise ValueError(f"word {pos.word!r} has no letters or digits to match")
+    n = len(target)
+    hits = [i for i in range(len(words) - n + 1)
+            if all(words[i + k][0] == target[k] for k in range(n))]
+    idx = pos.nth - 1 if pos.nth > 0 else len(hits) + pos.nth
+    if not 0 <= idx < len(hits):
+        raise ValueError(
+            f"word {pos.word!r} is sung {len(hits)} time{'s' * (len(hits) != 1)}; "
+            f"nth {pos.nth} is out of range"
+        )
+    i = hits[idx]
+    return float(words[i][1] if pos.edge == "start" else words[i + n - 1][2])
 
 
 def track_pos_to_seconds(
@@ -329,6 +404,15 @@ def track_pos_to_seconds(
         return resolve_grid(track, grid).beat_to_seconds(pos.beat)
     if isinstance(pos, BarPos):
         return resolve_grid(track, grid).bar_to_seconds(pos.bar)
+    if isinstance(pos, WordPos):
+        if pos.in_ is not None:
+            raise ValueError(f'"in" is for mix positions; in a track position, word {pos.word!r} is this track\'s')
+        t = word_sec(pos, grid)
+        if pos.offset is None:
+            return t
+        if isinstance(pos.offset, SecondsDur):
+            return t + float(pos.offset.seconds)
+        return t + duration_to_seconds(pos.offset, resolve_grid(track, grid).bpm)
     raise TypeError(f"Unknown position type: {type(pos).__name__}")
 
 
@@ -408,7 +492,10 @@ def handoff_swap(
     seg: TransitionSegment, mix_tempo: "TempoMap | float", anchors: dict[str, float] | None = None
 ) -> float:
     """A vocal_handoff's vocal switch, in mix seconds (v0.8): `start_at` +
-    `swap_at.offset`, by default halfway through `duration`."""
+    `swap_at.offset`, by default halfway through `duration`; or (v0.10) when
+    a word is sung."""
+    if isinstance(seg.swap_at, WordPos):  # v0.10: on a word
+        return mix_pos_to_seconds(seg.swap_at, mix_tempo, anchors)
     start = mix_pos_to_seconds(seg.start_at, mix_tempo, anchors)
     if seg.swap_at is None:
         return start + mix_duration(start, seg.duration, mix_tempo) / 2

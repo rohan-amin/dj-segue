@@ -44,6 +44,8 @@ from dj_segue.schema.plan import (
     TransitionSegment,
 )
 from dj_segue.time_math import (
+    Anchors,
+    SegmentClock,
     TempoMap,
     TrackGrid,
     Warp,
@@ -232,7 +234,7 @@ def resolve_timeline(
     grids = grids or {}
     tempo = as_tempo(mix_tempo)
     spans: list[Span] = []
-    anchors: dict[str, float] = {}
+    anchors = Anchors()  # (+ each play segment's clock, for mix word positions)
     cursor: dict[int, float] = {}
 
     def start_of(seg) -> float:
@@ -274,6 +276,8 @@ def resolve_timeline(
             spans.append(
                 Span(i, "play", seg.deck, start, end, seg.track, from_sec, rate, warp=warp)
             )
+            if seg.id is not None:
+                anchors.clocks[seg.id] = SegmentClock(grid, from_sec, to_sec, start, rate, warp)
         elif isinstance(seg, LoopSegment):
             track = plan.tracks[seg.track]
             grid = grids.get(seg.track)

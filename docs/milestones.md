@@ -197,6 +197,11 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 **Goal:** Word-level timing for every track, then AI-generated plans from English.
 
+**Progress (2026-10-11):**
+- **W1 done:** `dj-segue words` — LRCLIB lyrics aligned to the vocals stem (torchaudio wav2vec2), checked against Whisper (faster-whisper large-v3-turbo); merged words, `confirmed` where Whisper heard them; cached in `.cache/words/`. Annotate shows a words lane and a follow-along lyrics panel.
+- **W2 done:** schema v0.10 word positions `{ "word", "nth", "edge", "offset" }` (track), `+ "in": segment` (mix, `swap_at`). Example: `examples/pgw_cil_know.plan.jsonc` (vocal handoff on a shared "know").
+- Next: tune words strips (snap the swap to words); wordplay candidate finder; then the planner.
+
 **Scope in:**
 - **Word timing first** (unblocks M3's acceptance test): Whisper word timestamps on the vocals stem, cached per track; plan word cues such as `{ "word": "up", "nth": 2 }` that resolve to a time.
 - Lyrics ingestion (LRCLIB or Genius-with-alignment).

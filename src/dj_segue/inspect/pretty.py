@@ -22,6 +22,7 @@ from dj_segue.schema.plan import (
     SilenceSegment,
     StemVolumeLane,
     TransitionSegment,
+    WordPos,
 )
 from dj_segue.schema.validator import (
     PlanValidationError,
@@ -159,7 +160,9 @@ def _write_timeline(
             start = _fmt_mix_position(seg.start_at, mix_tempo, anchors)
             dur = _fmt_duration(seg.duration)
             shaping = f"  curve={seg.curve}" if seg.curve else ""
-            if seg.swap_at is not None:
+            if isinstance(seg.swap_at, WordPos):
+                shaping += f"  swap_at={_fmt_mix_position(seg.swap_at, mix_tempo, anchors)}"
+            elif seg.swap_at is not None:
                 shaping += f"  swap_at=+{_fmt_duration(seg.swap_at.offset)}"
             if seg.echo is not None:
                 shaping += (
@@ -314,6 +317,13 @@ def _fmt_track_position(pos) -> str:
         return f"{pos.second:g}s"
     if isinstance(pos, CuePos):
         return f"cue:{pos.cue}"
+    if isinstance(pos, WordPos):
+        raw = f'word "{pos.word}"' + (f" #{pos.nth}" if pos.nth != 1 else "")
+        raw += " (end)" if pos.edge == "end" else ""
+        if pos.offset is not None:
+            off = _fmt_duration(pos.offset)
+            raw += f" {off}" if off.startswith("-") else f" +{off}"
+        return raw + (f" in {pos.in_}" if pos.in_ else "")
     return repr(pos)
 
 

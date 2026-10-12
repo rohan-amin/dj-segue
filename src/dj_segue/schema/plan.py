@@ -1,6 +1,6 @@
 """Pydantic models for the dj-segue plan schema (v0.1–v0.9).
 
-The shape mirrors `docs/schema-v0.9.md` (the latest). Cross-field rules that pydantic alone
+The shape mirrors `docs/schema-v0.10.md` (the latest). Cross-field rules that pydantic alone
 can't express (deck overlap, cue resolution, etc.) live in `validator.py`.
 """
 
@@ -49,6 +49,33 @@ class CuePos(BaseModel):
     cue: str
 
 
+class WordPos(BaseModel):
+    """v0.10: where a word is sung (from `dj-segue words`). `word` may be a
+    phrase ("bottoms up": its words in a row); matching ignores case and
+    punctuation. `nth` counts from 1 (negative from the end: -1 = the last
+    time). `edge`: the word's start, or the end of its (last) word.
+
+    In a track position (`from`/`to`) it's the word's time in the track. In a
+    mix position (`start_at`, keyframe `at`, a handoff's `swap_at`) `in`
+    names a play segment, and it's when that segment plays the word.
+    `offset` moves it, e.g. `{"beats": -8}`: 8 beats before the word."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    word: str = Field(min_length=1)
+    nth: int = 1
+    edge: Literal["start", "end"] = "start"
+    in_: str | None = Field(default=None, alias="in")
+    # A duration from the word (may be negative): track beats/bars at the
+    # track's tempo in a track position, mix beats/bars in a mix position.
+    offset: "Duration | None" = None
+
+    @model_validator(mode="after")
+    def _nth_nonzero(self) -> "WordPos":
+        if self.nth == 0:
+            raise ValueError("nth counts from 1 (or from -1 for the last); 0 isn't a position")
+        return self
+
+
 def _normalize_position(v: Any) -> Any:
     # `"from": "intro_drop"` is shorthand for `{"cue": "intro_drop"}`.
     if isinstance(v, str):
@@ -57,7 +84,7 @@ def _normalize_position(v: Any) -> Any:
 
 
 Position = Annotated[
-    Union[BeatPos, BarPos, SecondPos, CuePos],
+    Union[BeatPos, BarPos, SecondPos, CuePos, WordPos],
     BeforeValidator(_normalize_position),
 ]
 
@@ -74,7 +101,7 @@ class AfterPos(BaseModel):
 # Mix-time positions (start_at, keyframe `at`). Cues stay in the union so the
 # validator can report "cue not allowed in mix-time" rather than a parse error.
 MixPosition = Annotated[
-    Union[BeatPos, BarPos, SecondPos, CuePos, AfterPos],
+    Union[BeatPos, BarPos, SecondPos, CuePos, AfterPos, WordPos],
     BeforeValidator(_normalize_position),
 ]
 
@@ -97,6 +124,7 @@ class SecondsDur(BaseModel):
 Duration = Union[BeatsDur, BarsDur, SecondsDur]
 
 AfterPos.model_rebuild()
+WordPos.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +365,8 @@ class TransitionSegment(BaseModel):
     out: TransitionSide | None = None  # v0.4: the from_deck's fade
     in_: TransitionSide | None = Field(default=None, alias="in")  # v0.4: the to_deck's fade
     echo: Echo | None = None  # v0.6; echo_out only
-    swap_at: SwapAt | None = None  # v0.8; vocal_handoff only (default: halfway)
+    # v0.8; vocal_handoff only (default: halfway). v0.10: or on a word.
+    swap_at: SwapAt | WordPos | None = None
 
     @model_validator(mode="after")
     def _shaping_is_crossfade_only(self) -> "TransitionSegment":
@@ -469,7 +498,7 @@ class Plan(BaseModel):
         if v not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 f"Unsupported schema_version {v!r}; "
-                f"supported: {sorted(SUPPORTED_SCHEMA_VERSIONS)}"
+                f"supported: {sorted(SUPPORTED_SCHEMA_VERSIONS, key=lambda x: tuple(map(int, x.split('.'))))}"
             )
         return v
 
@@ -500,6 +529,9 @@ class Plan(BaseModel):
                 for name, side in (("out", seg.out), ("in", seg.in_))
                 if side is not None and isinstance(side.curve, PointCurve)
             ]
+        if tuple(int(x) for x in v.split(".")) < (0, 10):
+            problems += [f"{where}: a word position requires schema_version 0.10"
+                         for where, _, _ in word_positions(self)]
         if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8") and self.meta.tempo_map:
             problems.append("meta.tempo_map requires schema_version 0.9")
         if v in ("0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"):
@@ -590,6 +622,42 @@ def _v03_features(plan: "Plan"):
         for j, kf in enumerate(lane.keyframes):
             if isinstance(kf.at, AfterPos):
                 yield f"automation[{i}].keyframes[{j}]", "an `after` position"
+
+
+def word_positions(plan: "Plan"):
+    """(where, WordPos, "track" | "mix") for every word position (v0.10)."""
+    for i, seg in enumerate(plan.timeline):
+        where = f"timeline[{i}]"
+        for name in ("from_", "to"):
+            pos = getattr(seg, name, None)
+            if isinstance(pos, WordPos):
+                yield f"{where}.{name.rstrip('_')}", pos, "track"
+        if isinstance(getattr(seg, "start_at", None), WordPos):
+            yield f"{where}.start_at", seg.start_at, "mix"
+        if isinstance(getattr(seg, "swap_at", None), WordPos):
+            yield f"{where}.swap_at", seg.swap_at, "mix"
+    for i, lane in enumerate(plan.automation):
+        for j, kf in enumerate(lane.keyframes):
+            if isinstance(kf.at, WordPos):
+                yield f"automation[{i}].keyframes[{j}].at", kf.at, "mix"
+    for i, change in enumerate(plan.meta.tempo_map or []):
+        if isinstance(change.at, WordPos):
+            yield f"meta.tempo_map[{i}].at", change.at, "mix"
+
+
+def word_tracks(plan: "Plan") -> set[str]:
+    """Tracks whose word timing the plan needs: those a track word position
+    is in, and those of the play segments a mix word position names."""
+    by_id = {seg.id: seg for seg in plan.timeline if getattr(seg, "id", None)}
+    out = set()
+    for i, seg in enumerate(plan.timeline):
+        for name in ("from_", "to"):
+            if isinstance(getattr(seg, name, None), WordPos):
+                out.add(seg.track)
+    for _, pos, ctx in word_positions(plan):
+        if ctx == "mix" and pos.in_ in by_id and hasattr(by_id[pos.in_], "track"):
+            out.add(by_id[pos.in_].track)
+    return out & set(plan.tracks)
 
 
 def load_plan(path: str | Path) -> Plan:

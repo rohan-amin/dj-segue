@@ -6,7 +6,8 @@ audio's mtime and the current analyzer version.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dj_segue.analyzer import (
@@ -16,7 +17,7 @@ from dj_segue.analyzer import (
     load_cache,
     write_cache,
 )
-from dj_segue.schema.plan import Plan
+from dj_segue.schema.plan import Plan, word_tracks
 from dj_segue.time_math import TrackGrid
 
 
@@ -65,6 +66,9 @@ class PreprocessResult:
     tracks: dict[str, TrackAnalysis]
     cached_count: int  # how many files were already fresh
     analyzed_count: int  # how many we re-ran analysis on
+    # v0.10: sung words per track whose word positions the plan uses
+    # ((normalized text, start, end), from `dj-segue words`).
+    words: dict[str, tuple] = field(default_factory=dict)
 
     def grids(self) -> dict[str, TrackGrid]:
         """Resolved fixed beat grid per track.
@@ -75,7 +79,10 @@ class PreprocessResult:
         audio). Raises TempoNotDetectedError for a track with no
         declared bpm and no detectable beat.
         """
-        return {tid: ta.grid for tid, ta in self.tracks.items()}
+        return {
+            tid: replace(ta.grid, words=self.words[tid]) if tid in self.words else ta.grid
+            for tid, ta in self.tracks.items()
+        }
 
 
 def preprocess(plan: Plan, audio_root: Path) -> PreprocessResult:
@@ -110,7 +117,29 @@ def preprocess(plan: Plan, audio_root: Path) -> PreprocessResult:
         tracks=out,
         cached_count=cached,
         analyzed_count=analyzed,
+        words={tid: load_words(plan, tid, audio_root) for tid in sorted(word_tracks(plan))},
     )
+
+
+def load_words(plan: Plan, tid: str, audio_root: Path) -> tuple:
+    """A track's sung words for word positions (v0.10): the lyric words when
+    there are lyrics (Whisper-only ad-libs would throw off `nth`), else
+    Whisper's. Times them first if `dj-segue words` hasn't (~1 min)."""
+    track = plan.tracks[tid]
+    if "full" not in track.stems:
+        raise ValueError(f"track {tid!r}: word positions need a track with a `path`, not explicit stems")
+    audio = (Path(audio_root) / track.stems["full"]).resolve()
+    try:
+        from dj_segue.words import cached, words_for
+        from dj_segue.words.merge import norm
+
+        wt = cached(audio) or words_for(audio, log=lambda m: print(m, file=sys.stderr))
+    except ImportError as e:
+        raise ValueError(
+            f"track {tid!r}: word positions need word timing: pip install -e '.[stems,words]' ({e})"
+        ) from e
+    lyric = [w for w in wt.words if w.source == "lyrics"]
+    return tuple((norm(w.text), w.start, w.end) for w in (lyric or wt.words))
 
 
 def separate_stems(plan: Plan, audio_root: Path, on_track=None) -> tuple[int, int]:

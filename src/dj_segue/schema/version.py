@@ -23,9 +23,13 @@
 0.9 — additive: `meta.tempo_map` (the mix tempo changes partway: steps and
       ramps; `target_bpm: "mix"` segments follow it). Rejected in plans that
       declare 0.1–0.8.
+0.10 — additive: word positions `{"word", "nth", "edge"}` (where a word is
+      sung, from `dj-segue words`): in track positions, and with `in` (a play
+      segment) in mix positions and a vocal_handoff's `swap_at`. Rejected in
+      plans that declare 0.1–0.9.
 """
 
 from __future__ import annotations
 
-CURRENT_SCHEMA_VERSION = "0.9"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"})
+CURRENT_SCHEMA_VERSION = "0.10"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.10"})
