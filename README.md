@@ -30,6 +30,7 @@ dj-segue scrub      audio/some_track.mp3                # find beat numbers by e
 dj-segue tune       examples/fancy_likeem.plan.jsonc    # adjust transitions by ear
 dj-segue annotate   audio/some_track.mp3                # mark phrases, key, cues, notes (for planning)
 dj-segue words      audio/some_track.mp3                # time every sung word (lyrics + Whisper)
+dj-segue find       audio/a.mp3 audio/b.mp3             # wordplay candidates from a into b, ranked
 ```
 
 `dj-segue words <file>` times every sung word: lyrics from LRCLIB (by the file's
@@ -42,6 +43,13 @@ Whisper heard are added). Results, lyrics included, stay in `.cache/words/`
 separation, word timing (as `dj-segue words`) and an annotation draft in `annotations/`
 (an existing annotation is kept). Everything is cached, so re-running only does what's
 missing. Then `dj-segue annotate <file>` to label sections, check grid and key, and mark cues.
+
+`dj-segue find <a> <b>` lists where a transition from a into b could turn on a word:
+shared words and phrases, sound-alikes ("know" / "no") and rhymes, ranked by how
+prominent they are (title, hook), how reliable their timing is (Whisper-confirmed, or at
+a cue you marked named after the word), and whether they land on the same beat of the
+bar — each with a suggested technique (vocal handoff, loop and jump, echo out).
+`--both` looks both ways; `--json` is for the planner.
 
 To mix your own music, put audio files in `audio/` (git-ignored) and point a plan's
 track `path`s at them. See `examples/real_mix.plan.jsonc`, `examples/starships_omt.plan.jsonc`

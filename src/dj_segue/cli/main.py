@@ -284,6 +284,38 @@ def prepare(
 
 
 @app.command()
+def find(
+    outgoing: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    incoming: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    top: int = typer.Option(10, "--top", help="How many candidates to list."),
+    both: bool = typer.Option(False, "--both", help="Also look the other way (incoming → outgoing)."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON (for the planner)."),
+    folder: Path = typer.Option(Path("annotations"), "--folder", help="Where annotations are."),
+) -> None:
+    """Find wordplay transitions between two tracks: shared words and phrases,
+    sound-alikes and rhymes, ranked, each with a suggested technique. Needs
+    word timing (run `dj-segue prepare` on each track first)."""
+    from dj_segue import finder
+
+    a, b = finder.load_track(outgoing, folder), finder.load_track(incoming, folder)
+    for x, y in ((a, b), (b, a)) if both else ((a, b),):
+        cands = finder.find(x, y, top)
+        if as_json:
+            typer.echo(finder.to_json(cands, x, y))
+            continue
+        typer.echo(f"\n{x.name}  →  {y.name}")
+        for note in finder.pair_notes(x, y):
+            typer.echo(f"  {note}")
+        if not cands:
+            typer.echo("  no shared words, sound-alikes or rhymes found")
+        for c in cands:
+            typer.echo("  " + finder.summary_line(c))
+    if not as_json:
+        typer.echo("\n(score 0–1 · ⚑ at a cue you marked · ✓ confirmed by Whisper · ? not heard by Whisper · "
+                   "#n = which time it's sung)")
+
+
+@app.command()
 def words(
     audio_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     artist: str | None = typer.Option(None, "--artist", help="Override the file's artist tag."),

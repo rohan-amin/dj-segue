@@ -35,6 +35,7 @@ stems = [
 words = [
     "faster-whisper>=1.1",
     "mutagen>=1.47",
+    "pronouncing>=0.2",  # CMU pronouncing dictionary: rhymes and sound-alikes (the finder)
 ]
 dev = [
     "pytest>=8.0",
