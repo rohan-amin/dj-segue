@@ -582,5 +582,12 @@
   52,
   72
  ],
+ "cues": [
+  {
+   "name": "everybody",
+   "second": 92.7241,
+   "note": ""
+  }
+ ],
  "version": 1
 }

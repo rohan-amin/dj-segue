@@ -1,0 +1,64 @@
+// examples/lgis_everybody.plan.jsonc
+//
+// Let's Get It Started into Everybody (Backstreet's Back), on "everybody".
+// Positions come from the cues marked in each track's annotation (`dj-segue
+// annotate`, `m`): nothing here is a hand-counted beat except the starts.
+//
+//   - Let's Get It Started plays from the top to its "everybody" cue (bar 40).
+//   - There it loops its next 4 beats while Everybody comes in: Everybody's
+//     first 15 beats (to its "end short intro" cue) crossfade in.
+//   - Then Everybody jumps straight to its "everybody" cue (beat 207, the
+//     pickup into the hook at bar 52): 15 beats in, the pickup falls on the
+//     4th beat of the bar, so the hook lands on the downbeat (mix beat 176),
+//     and plays on through the hook and the bridge after it. The loop's last
+//     beat sits under the pickup, already faded out.
+//   - Tempo: the mix runs at Let's Get It Started's 105 (Everybody stretched
+//     from 108.06 during the blend), then ramps to Everybody's own tempo over
+//     8 bars after the jump.
+
+{
+  "schema_version": "0.10",
+
+  "meta": {
+    "mix_name": "Let's Get It Started into Everybody, on \"everybody\"",
+    "source_prompt": "Play LGIS to its 'everybody' cue, loop the next 4 beats while Everybody's first 16 beats crossfade in (to 'end short intro'), then jump to Everybody's 'everybody' cue",
+    "mix_tempo": 105,
+    "tempo_map": [
+      { "at": { "after": "ev_intro" }, "bpm": 108.063, "ramp": { "bars": 8 } }
+    ]
+  },
+
+  "tracks": {
+    "lgis": { "path": "audio/01 - Let's Get It Started (Spike Mix) [Explicit].mp3" },
+    "ev":   { "path": "audio/04 - Everybody (Backstreet's Back) (Extended Version).mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "lgis" },
+    "2": { "label": "ev" }
+  },
+
+  "timeline": [
+    { "type": "play", "id": "lgis", "deck": 1, "track": "lgis",
+      "from": { "beat": 0 }, "to": { "cue": "everybody" }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "loop", "id": "lgis_loop", "deck": 1, "track": "lgis",
+      "from": { "cue": "everybody" }, "start_at": { "after": "lgis" },
+      "target_bpm": "mix",
+      "schedule": [ { "length": { "beats": 4 }, "repetitions": 4 } ] },
+
+    { "type": "play", "id": "ev_intro", "deck": 2, "track": "ev",
+      "from": { "beat": 0 }, "to": { "cue": "end short intro" }, "start_at": { "after": "lgis" },
+      "target_bpm": "mix" },
+
+    { "type": "transition", "style": "crossfade",
+      "from_deck": 1, "to_deck": 2,
+      "start_at": { "after": "lgis" }, "duration": { "beats": 15 } },
+
+    // Straight on from the intro (no start_at: it follows on its deck).
+    { "type": "play", "id": "ev_main", "deck": 2, "track": "ev",
+      "from": { "cue": "everybody" }, "to": { "bar": 72 },
+      "target_bpm": "mix" }
+  ]
+}

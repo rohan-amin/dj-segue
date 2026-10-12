@@ -769,5 +769,17 @@
   108,
   124
  ],
+ "cues": [
+  {
+   "name": "end short intro",
+   "second": 9.8747,
+   "note": ""
+  },
+  {
+   "name": "everybody",
+   "second": 116.4793,
+   "note": ""
+  }
+ ],
  "version": 1
 }
