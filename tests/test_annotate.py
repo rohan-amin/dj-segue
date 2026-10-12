@@ -178,3 +178,24 @@ def test_regrid_keeps_phrases_in_time(served) -> None:
     ann = session.ann
     assert [(p.bar, p.label) for p in ann.phrases] == [(0, "intro"), (4, "hook")]
     assert len(ann.bars["vocals"]) == ann.n_bars
+
+
+def test_words_come_from_the_words_cache(served, tmp_path, monkeypatch) -> None:
+    from dj_segue import words as words_mod
+    from dj_segue.annotate import file_sha1
+
+    session, url = served
+    monkeypatch.setenv(words_mod.CACHE_ENV, str(tmp_path / "words"))
+    assert json.loads(urllib.request.urlopen(url + "/words").read()) == {"available": False}
+    folder = tmp_path / "words" / file_sha1(session.audio_path)
+    folder.mkdir(parents=True)
+    (folder / "words.json").write_text(json.dumps({
+        "version": words_mod.VERSION, "audio": "t.wav", "audio_sha1": "x",
+        "lyrics": {"id": 1, "artist": "a", "title": "t", "synced": True}, "whisper": True,
+        "words": [{"text": "hi", "start": 1.0, "end": 1.2, "score": 0.9, "source": "lyrics",
+                   "confirmed": True, "line": 0}],
+    }))
+    session._words = None  # (the session keeps what it read)
+    got = json.loads(urllib.request.urlopen(url + "/words").read())
+    assert got["available"] and got["words"][0]["start"] == 1.0
+    assert got["summary"]["confirmed"] == 1

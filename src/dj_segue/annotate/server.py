@@ -3,6 +3,7 @@
 GET  /             the page
 GET  /annotation   the annotation (+ "summary", "labels")
 GET  /audio        the track
+GET  /words        the track's word timing from `dj-segue words` ({"available": false} if not run)
 POST /save         {key, key_checked, grid_checked, tags, notes, phrases}
 POST /grid         {bpm, anchor_sec}: move to a new grid (re-measures bars)
 """
@@ -35,6 +36,7 @@ class AnnotateSession:
         self.ann, self.audio_path, self.out_path = ann, Path(audio_path), Path(out_path)
         self._stems = stems
         self._cache: dict | None = None
+        self._words: dict | None = None
         self.lock = threading.Lock()
 
     def stems(self, audio, sr):
@@ -46,6 +48,17 @@ class AnnotateSession:
                 fn = self._stems
             self._cache = fn(audio, sr)
         return self._cache
+
+    def words(self) -> dict:
+        """Word timing from the words cache (never computed here: it's slow)."""
+        if self._words is None:
+            from dj_segue.words import cached, summary
+
+            wt = cached(self.audio_path)
+            self._words = {"available": False} if wt is None else {
+                "available": True, **wt.to_json(), "summary": summary(wt),
+            }
+        return self._words
 
     def payload(self) -> dict:
         keys = [f"{k} {m}" for m in ("major", "minor") for k in KEY_NAMES]
@@ -103,6 +116,8 @@ def make_server(session: AnnotateSession, port: int = 0) -> ThreadingHTTPServer:
             elif self.path == "/annotation":
                 with session.lock:
                     self._json(session.payload())
+            elif self.path == "/words":
+                self._json(session.words())
             elif self.path == "/audio":
                 self._send(session.audio_path.read_bytes(), audio_type)
             else:

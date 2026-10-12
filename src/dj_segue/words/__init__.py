@@ -31,7 +31,7 @@ from dj_segue.words.merge import Word, merge
 
 CACHE_ENV = "DJ_SEGUE_WORDS_CACHE"
 # Bump when aligned or merged results would change.
-VERSION = 2
+VERSION = 3
 # An alignment score below this is weak: on real tracks a third of such words
 # were confirmed by Whisper, against four in five above 0.4 (2026-10-11).
 WEAK_SCORE = 0.1
@@ -101,6 +101,17 @@ def words_for(
     return wt
 
 
+def cached(audio_path: Path) -> WordTiming | None:
+    """The merged words from the cache, if `words_for` has run on this file."""
+    from dj_segue.annotate import file_sha1
+
+    path = cache_dir() / file_sha1(Path(audio_path)) / "words.json"
+    if not path.exists():
+        return None
+    d = json.loads(path.read_text())
+    return WordTiming.from_json(d) if d.get("version") == VERSION else None
+
+
 def summary(wt: WordTiming) -> dict:
     """Counts only — no lyrics (safe to print anywhere)."""
     lyr = [w for w in wt.words if w.source == "lyrics"]
@@ -159,9 +170,15 @@ def _align_lyrics(record: dict, audio16k, log) -> list[Aligned]:
             if text:  # a little slack: LRC times are by ear
                 spans.append((max(0.0, t - 0.3), min(dur, end + 0.3), text))
     else:
-        spans = [(0.0, dur, " ".join(lrclib.plain_lines(record)))]
+        lines = lrclib.plain_lines(record)
+        spans = [(0.0, dur, " ".join(lines))]
     log(f"words: aligning lyrics ({len(spans)} span{'s' * (len(spans) != 1)})…")
-    return align(audio16k, spans)
+    words = align(audio16k, spans)
+    if not rows:  # one span for the whole text: give words back their lines
+        line_of = [i for i, text in enumerate(lines) for _ in text.split()]
+        for w, line in zip(words, line_of):
+            w.line = line
+    return words
 
 
 def _whisper(audio16k, log) -> list[Aligned]:

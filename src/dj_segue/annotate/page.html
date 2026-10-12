@@ -67,6 +67,18 @@
   .heat { display: inline-block; width: 46px; height: 10px; border-radius: 2px; vertical-align: middle; }
   pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
   details summary { cursor: pointer; color: var(--muted); }
+  #lyrics { max-height: 220px; overflow-y: auto; line-height: 1.9; padding-right: 4px; }
+  #lyrics .ln { display: flex; gap: 10px; border-radius: 6px; padding: 0 6px; }
+  #lyrics .ln.cur { background: var(--sel); }
+  #lyrics .ln .at { flex: none; width: 52px; color: var(--muted); font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums; }
+  #lyrics .ln.adlib .ws { font-style: italic; }
+  #lyrics .w { cursor: pointer; border-radius: 4px; padding: 1px 2px; }
+  #lyrics .w:hover { background: var(--btn); }
+  #lyrics .w.u { color: var(--muted); }
+  #lyrics .w.wo { font-style: italic; color: var(--other); }
+  #lyrics .w.weak { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+  #lyrics .w.now { background: var(--accent); color: #fff; }
+  .wkey span { margin-right: 12px; }
   #toast { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 12px;
            border-radius: 8px; background: var(--panel); border: 1px solid var(--bad); color: var(--bad);
            box-shadow: 0 2px 10px rgba(0,0,0,.15); }
@@ -115,6 +127,20 @@
       <button id="loopP" title="Loop the selected phrase (l)">Loop phrase</button>
       <button id="click" title="Metronome on the grid (c) — the high click is the downbeat">Click</button>
     </div>
+  </div>
+
+  <div class="panel" id="lyricsPanel" hidden>
+    <div class="label"><span><b style="color:var(--ink)">Lyrics</b> <span id="lyricsSrc"></span> — click a word to jump there</span>
+      <span class="wkey keys">
+        <span title="Whisper heard this word here too: its timing is trustworthy">confirmed</span>
+        <span class="w u" title="In the lyrics, but Whisper didn't hear it here: check by ear (Whisper misses chants)" style="color:var(--muted)">not heard by Whisper</span>
+        <span title="Heard by Whisper but not in the lyrics (ad-libs)" style="font-style:italic;color:var(--other)">Whisper only</span>
+        <span title="Weakly aligned: the timing may be off" style="text-decoration:underline dotted;text-underline-offset:3px">weak timing</span>
+      </span></div>
+    <div id="lyrics"></div>
+  </div>
+  <div class="panel" id="noWords" hidden>
+    <span class="keys">No word timing for this track yet. Run <kbd>dj-segue words "<span id="noWordsFile"></span>"</kbd> (about a minute), then reload this page to see the lyrics in time with the music.</span>
   </div>
 
   <div class="panel">
@@ -200,6 +226,9 @@ let buf = null, clickBuf = null, ctx = null, master = null, clickGain = null, dr
 let src = null, clickSrc = null, drone = [];
 const st = { playing: false, offset: 0, startCtx: 0, startOff: 0, loop: null, click: false };
 let dragB = null;       // boundary drag: {i, x0}
+let WT = null;          // word timing from `dj-segue words`: {words: [{text, start, end, score, source, confirmed, line}], …}
+let wordSpans = [];     // the lyrics panel's word elements, by word index
+let nowWord = -1;       // index of the word being heard (or the last one before it)
 
 // ---------------------------------------------------------------- grid
 const beatSec = () => 60 / A.bpm;
@@ -488,8 +517,9 @@ function drawZoom() {
   const c = $("zoom"), dpr = fit(c), W = c.width, H = c.height, g = c.getContext("2d");
   const page = Math.floor(currentBeat() / (4 * PAGE_BARS));
   const b0 = page * 4 * PAGE_BARS, b1 = b0 + 4 * PAGE_BARS, t0 = secOf(b0), t1 = secOf(b1);
-  const x = (s) => (s - t0) / (t1 - t0) * W, labelH = 16 * dpr, wh = H - labelH, mid = labelH + wh / 2;
-  const key = `${W}x${H}:${page}:${A.bpm}:${A.anchor_sec}`;
+  const laneH = WT ? WORD_LANE * dpr : 0;
+  const x = (s) => (s - t0) / (t1 - t0) * W, labelH = 16 * dpr, wh = H - labelH - laneH, mid = labelH + wh / 2;
+  const key = `${W}x${H}:${page}:${A.bpm}:${A.anchor_sec}:${laneH}`;
   if (zm.key !== key) {
     const off = document.createElement("canvas"); off.width = W; off.height = H;
     const o = off.getContext("2d");
@@ -513,8 +543,105 @@ function drawZoom() {
       g.fillText(p ? `bar ${beat / 4} · ${p.label}` : `bar ${beat / 4}`, xx + 3 * dpr + g.measureText(`${beat}`).width + 6 * dpr, 2 * dpr);
     }
   }
+  if (WT) drawWordLane(g, x, t0, t1, H - laneH, laneH, dpr);
   if (st.loop) { g.fillStyle = css("--loop"); g.fillRect(x(st.loop.a), labelH, x(st.loop.b) - x(st.loop.a), H); }
   g.fillStyle = css("--accent"); g.fillRect(Math.round(x(heard())) - dpr, labelH, 2 * dpr, H - labelH);
+}
+
+// Words under the zoomed waveform, in two staggered rows so short words have
+// room: confirmed solid, not heard by Whisper faded, Whisper-only italic,
+// weak timing dotted; the word being heard highlighted.
+const WORD_LANE = 38, WEAK = 0.1;
+function wordsIn(t0, t1) {
+  const out = [];
+  WT.words.forEach((w, i) => { if (w.end > t0 && w.start < t1) out.push(i); });
+  return out;
+}
+function drawWordLane(g, x, t0, t1, top, h, dpr) {
+  const rowH = h / 2, idx = wordsIn(t0, t1), t = heard();
+  g.fillStyle = css("--line"); g.fillRect(0, top, g.canvas.width, dpr);
+  g.textBaseline = "middle";
+  idx.forEach((i, k) => {
+    const w = WT.words[i], y = top + (k % 2) * rowH + 2 * dpr;
+    const x1 = x(w.start), x2 = Math.max(x(w.end), x1 + 2 * dpr);
+    const next = idx[k + 2] !== undefined ? x(WT.words[idx[k + 2]].start) : g.canvas.width;
+    const now = t >= w.start && t <= w.end;
+    g.fillStyle = now ? css("--accent") : w.source === "whisper" ? css("--other") : css("--vocals");
+    g.globalAlpha = now ? 0.9 : w.confirmed ? 0.28 : 0.12;
+    g.fillRect(x1, y, x2 - x1, rowH - 4 * dpr);
+    g.globalAlpha = 1;
+    g.font = `${w.source === "whisper" ? "italic " : ""}${11 * dpr}px -apple-system, sans-serif`;
+    g.fillStyle = now ? "#fff" : w.confirmed ? css("--ink") : css("--muted");
+    let text = w.text, room = next - x1 - 4 * dpr;
+    while (text.length > 1 && g.measureText(text).width > room) text = text.slice(0, -2) + "…";
+    if (g.measureText(text).width > room) return;
+    const ty = y + (rowH - 4 * dpr) / 2;
+    g.fillText(text, x1 + 2 * dpr, ty);
+    if (w.score < WEAK) {
+      g.fillStyle = css("--muted");
+      const tw = g.measureText(text).width;
+      for (let d = 0; d < tw; d += 3 * dpr) g.fillRect(x1 + 2 * dpr + d, ty + 7 * dpr, dpr, dpr);
+    }
+  });
+}
+function wordAtX(px, t0, t1, W) {  // the word under x on the lane (or the nearest start)
+  const s = t0 + px / W * (t1 - t0), idx = wordsIn(t0, t1);
+  let best = null;
+  for (const i of idx) {
+    const w = WT.words[i];
+    if (s >= w.start && s <= w.end) return i;
+    if (best === null || Math.abs(w.start - s) < Math.abs(WT.words[best].start - s)) best = i;
+  }
+  return best;
+}
+const gotoWord = (i) => gotoSec(Math.max(0, WT.words[i].start - 0.12));
+
+// The lyrics panel: lines as sung, the word you hear highlighted.
+function buildLyrics() {
+  const box = $("lyrics"); box.textContent = ""; wordSpans = [];
+  const lines = new Map();  // lyric line number (or "adlib N") → its words element
+  let adlibs = 0, prevAdlib = false;
+  WT.words.forEach((w, i) => {
+    const adlib = w.source === "whisper";
+    if (adlib && !prevAdlib) adlibs++;  // ad-libs in a row share a line of their own
+    prevAdlib = adlib;
+    const key = adlib ? `adlib ${adlibs}` : `line ${w.line}`;
+    if (!lines.has(key)) {
+      const line = document.createElement("div"); line.className = "ln" + (adlib ? " adlib" : "");
+      const at = document.createElement("span"); at.className = "at";
+      at.textContent = `bar ${Math.floor(beatAt(w.start) / 4)}`; at.title = "Jump to this line";
+      at.onclick = () => gotoWord(i);
+      const ws = document.createElement("span"); ws.className = "ws";
+      line.append(at, ws); box.append(line); lines.set(key, ws);
+    }
+    const sp = document.createElement("span");
+    sp.className = "w" + (adlib ? " wo" : w.confirmed === false ? " u" : "") + (w.score < WEAK ? " weak" : "");
+    sp.textContent = w.text;
+    sp.title = `${w.start.toFixed(2)} s · beat ${beatAt(w.start).toFixed(1)}` +
+      (adlib ? " · heard only by Whisper" : w.confirmed ? " · confirmed by Whisper" : w.confirmed === false ? " · not heard by Whisper" : "") +
+      ` · alignment ${Math.round(w.score * 100)}%`;
+    sp.onclick = () => gotoWord(i);
+    lines.get(key).append(sp, " ");
+    wordSpans[i] = sp;
+  });
+}
+function updateLyrics() {
+  if (!WT) return;
+  const t = heard(), ws = WT.words;
+  let lo = 0, hi = ws.length - 1, i = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (ws[m].start <= t) { i = m; lo = m + 1; } else hi = m - 1; }
+  if (i === nowWord) {
+    if (i >= 0) wordSpans[i].classList.toggle("now", t <= ws[i].end + 0.05);
+    return;
+  }
+  if (nowWord >= 0) { wordSpans[nowWord].classList.remove("now"); wordSpans[nowWord].parentNode.parentNode.classList.remove("cur"); }
+  nowWord = i;
+  if (i < 0) return;
+  const sp = wordSpans[i], ln = sp.parentNode.parentNode, box = $("lyrics");
+  sp.classList.toggle("now", t <= ws[i].end + 0.05);
+  ln.classList.add("cur");
+  if (st.playing && (ln.offsetTop < box.scrollTop || ln.offsetTop > box.scrollTop + box.clientHeight - ln.offsetHeight))
+    box.scrollTo({ top: ln.offsetTop - box.clientHeight / 3, behavior: "smooth" });
 }
 
 // ---------------------------------------------------------------- panels
@@ -618,7 +745,7 @@ function load(data, regridded) {
   renderGrid(); renderKey(); renderPhrases();
 }
 
-function frame() { if (buf) { updateReadout(); drawOverview(); drawZoom(); } requestAnimationFrame(frame); }
+function frame() { if (buf) { updateReadout(); drawOverview(); drawZoom(); updateLyrics(); } requestAnimationFrame(frame); }
 
 // ---------------------------------------------------------------- wiring
 function wire() {
@@ -692,6 +819,10 @@ function wire() {
     if (bar > 0) addStart(bar, null);
   });
   $("zoom").onclick = (e) => { const r = $("zoom").getBoundingClientRect();
+    if (WT && e.clientY > r.bottom - WORD_LANE) {
+      const i = wordAtX(e.clientX - r.left, zm.range[0], zm.range[1], r.width);
+      if (i !== null) { gotoWord(i); return; }
+    }
     gotoBeat(beatAt(zm.range[0] + (e.clientX - r.left) / r.width * (zm.range[1] - zm.range[0]))); };
 
   document.addEventListener("keydown", (e) => {
@@ -717,10 +848,23 @@ function wire() {
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { ovBase.key = zm.key = ""; renderPhrases(); });
 }
 
+async function loadWords() {
+  const d = await (await fetch("/words")).json();
+  if (!d.available) { $("noWordsFile").textContent = A.audio; $("noWords").hidden = false; return; }
+  WT = d;
+  const s = d.summary;
+  $("lyricsSrc").textContent = s.lyrics
+    ? `· LRCLIB ${s.lyrics.synced ? "line-timed" : "plain"} lyrics, ${s.confirmed ?? "?"} of ${s.from_lyrics} words confirmed by Whisper`
+    : "· from Whisper only (no lyrics found)";
+  $("zoom").style.height = `${150 + WORD_LANE}px`; zm.key = "";
+  buildLyrics(); $("lyricsPanel").hidden = false;
+}
+
 async function init() {
   const data = await (await fetch("/annotation")).json();
   load(data, false);
   wire(); updateButtons();  // editing works while the audio decodes
+  loadWords();
   $("status").textContent = "decoding audio…";
   const bytes = await (await fetch("/audio")).arrayBuffer();
   buf = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(bytes);
