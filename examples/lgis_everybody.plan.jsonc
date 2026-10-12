@@ -12,9 +12,9 @@
 //     4th beat of the bar, so the hook lands on the downbeat (mix beat 176),
 //     and plays on through the hook and the bridge after it. The loop's last
 //     beat sits under the pickup, already faded out.
-//   - Tempo: the mix runs at Let's Get It Started's 105 (Everybody stretched
-//     from 108.06 during the blend), then ramps to Everybody's own tempo over
-//     8 bars after the jump.
+//   - Tempo: the whole mix runs at Everybody's 108.06, so Let's Get It
+//     Started plays ~3% fast (from 105) from the top, and Everybody at its
+//     own tempo.
 
 {
   "schema_version": "0.10",
@@ -22,10 +22,7 @@
   "meta": {
     "mix_name": "Let's Get It Started into Everybody, on \"everybody\"",
     "source_prompt": "Play LGIS to its 'everybody' cue, loop the next 4 beats while Everybody's first 16 beats crossfade in (to 'end short intro'), then jump to Everybody's 'everybody' cue",
-    "mix_tempo": 105,
-    "tempo_map": [
-      { "at": { "after": "ev_intro" }, "bpm": 108.063, "ramp": { "bars": 8 } }
-    ]
+    "mix_tempo": 108.063
   },
 
   "tracks": {
