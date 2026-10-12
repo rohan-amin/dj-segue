@@ -67,7 +67,7 @@
   .heat { display: inline-block; width: 46px; height: 10px; border-radius: 2px; vertical-align: middle; }
   pre { margin: 0; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
   details summary { cursor: pointer; color: var(--muted); }
-  #lyrics { max-height: 220px; overflow-y: auto; line-height: 1.9; padding-right: 4px; }
+  #lyrics { max-height: 220px; overflow-y: auto; line-height: 1.9; padding: 0 4px 8px 0; }
   #lyrics .ln { display: flex; gap: 10px; border-radius: 6px; padding: 0 6px; }
   #lyrics .ln.cur { background: var(--sel); }
   #lyrics .ln .at { flex: none; width: 52px; color: var(--muted); font-size: 12px; cursor: pointer; font-variant-numeric: tabular-nums; }
@@ -640,8 +640,15 @@ function updateLyrics() {
   const sp = wordSpans[i], ln = sp.parentNode.parentNode, box = $("lyrics");
   sp.classList.toggle("now", t <= ws[i].end + 0.05);
   ln.classList.add("cur");
-  if (st.playing && (ln.offsetTop < box.scrollTop || ln.offsetTop > box.scrollTop + box.clientHeight - ln.offsetHeight))
-    box.scrollTo({ top: ln.offsetTop - box.clientHeight / 3, behavior: "smooth" });
+  if (st.playing) keepInView(ln, box);
+}
+// Scroll the lyrics only when the current line is about to leave the box, and
+// then just enough to put it a line from the top (positions inside the box).
+function keepInView(ln, box) {
+  const top = ln.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+  const margin = ln.offsetHeight;
+  if (top >= box.scrollTop && top + ln.offsetHeight <= box.scrollTop + box.clientHeight - margin) return;
+  box.scrollTo({ top: Math.max(0, top - margin), behavior: "smooth" });
 }
 
 // ---------------------------------------------------------------- panels
