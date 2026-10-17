@@ -16,6 +16,12 @@ Cues are named points you mark (`m` on the page): stored as exact seconds,
 so re-gridding never moves them. A plan's `{"cue": name}` finds them when
 the plan doesn't declare that cue itself.
 
+A cue can be a **wordplay spot** (`role`): "out" — this song can leave here,
+looping `loop` beats from the cue; "in" — another song can come in here;
+"both". `word` is the word (or phrase) the spot is for. The finder trusts
+spots over its own rules (your ear has judged them), and templates loop
+from and jump to them exactly.
+
 Bars are on the annotation's own grid: bar N starts at beat 4N, beat 0 =
 the first downbeat — the numbers a plan uses (with the annotation's bpm
 declared on the track, if it differs from the detected one).
@@ -68,6 +74,9 @@ class Cue:
     name: str
     second: float  # exact file time (on a beat if it was snapped)
     note: str = ""
+    role: str = ""  # a wordplay spot: "out" | "in" | "both"; "" = a plain cue
+    word: str = ""  # the word (or phrase) a spot is for
+    loop: float | None = None  # beats an out spot loops (None: a bar)
 
 
 @dataclass
@@ -101,7 +110,11 @@ class Annotation:
         return len(self.bars.get("energy", []))
 
     def to_json(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # A plain cue stays {name, second, note}: the spot fields only when it's a spot.
+        d["cues"] = [{k: v for k, v in c.items() if k in ("name", "second", "note") or c["role"]}
+                     for c in d["cues"]]
+        return d
 
     @classmethod
     def from_json(cls, data: dict) -> "Annotation":
@@ -337,10 +350,15 @@ def summary(ann: Annotation) -> dict:
         "breaks": [f"bars {a}–{b - 1}" for a, b in ann.breaks],
         "cues": [
             {"name": c.name, "beat": round(beat_of(c.second), 2), "bar": int(beat_of(c.second) // 4),
-             "second": round(c.second, 3), **({"note": c.note} if c.note else {})}
+             "second": round(c.second, 3), **({"note": c.note} if c.note else {}),
+             **({"role": c.role, "word": c.word} if c.role else {}),
+             **({"loop_beats": c.loop} if c.role in ("out", "both") and c.loop else {})}
             for c in ann.cues
         ],
     }
+
+
+SPOT_ROLES = ("", "out", "in", "both")
 
 
 def clean_cues(raw: list[dict], duration_sec: float) -> list[Cue]:
@@ -357,7 +375,17 @@ def clean_cues(raw: list[dict], duration_sec: float) -> list[Cue]:
         sec = float(c["second"])
         if not 0 <= sec <= duration_sec:
             raise ValueError(f"cue {name!r} at {sec:.2f}s is outside the track")
-        cues.append(Cue(name, round(sec, 4), str(c.get("note", ""))))
+        role = str(c.get("role") or "")
+        if role not in SPOT_ROLES:
+            raise ValueError(f"cue {name!r}: role must be one of out / in / both, not {role!r}")
+        word = " ".join(str(c.get("word") or "").split())
+        if role and not word:
+            raise ValueError(f"cue {name!r} is a wordplay spot: say which word it's for")
+        loop = c.get("loop")
+        loop = float(loop) if loop not in (None, "") and role in ("out", "both") else None
+        if loop is not None and not 0 < loop <= 32:
+            raise ValueError(f"cue {name!r}: a loop is more than 0 and at most 32 beats")
+        cues.append(Cue(name, round(sec, 4), str(c.get("note", "")), role, word if role else "", loop))
     return sorted(cues, key=lambda c: c.second)
 
 

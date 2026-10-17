@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import typer
@@ -291,6 +292,9 @@ def find(
     both: bool = typer.Option(False, "--both", help="Also look the other way (incoming → outgoing)."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON (for the planner)."),
     folder: Path = typer.Option(Path("annotations"), "--folder", help="Where annotations are."),
+    spots: bool = typer.Option(False, "--spots", help="Only pairs that use your wordplay spots (cues with a role)."),
+    plan: int | None = typer.Option(None, "--plan", help="Write candidate N (from 1) as a loop-and-jump plan."),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Where --plan writes (default examples/<a>_<b>_<word>.plan.jsonc)."),
 ) -> None:
     """Find wordplay transitions between two tracks: shared words and phrases,
     sound-alikes and rhymes, ranked, each with a suggested technique. Needs
@@ -298,8 +302,23 @@ def find(
     from dj_segue import finder
 
     a, b = finder.load_track(outgoing, folder), finder.load_track(incoming, folder)
+    if plan is not None:
+        from dj_segue import templates
+
+        cands = finder.find(a, b, max(top, plan), spots_only=spots)
+        if not 1 <= plan <= len(cands):
+            raise typer.BadParameter(f"there are {len(cands)} candidates", param_hint="--plan")
+        c = cands[plan - 1]
+        if "loop and jump" not in c.technique:
+            raise typer.BadParameter(f"candidate {plan} doesn't suit loop and jump ({c.technique})",
+                                     param_hint="--plan")
+        word = re.sub(r"\W+", "_", c.b_text).strip("_")
+        out = out or Path("examples") / f"{templates.track_id(a)}_{templates.track_id(b)}_{word}.plan.jsonc"
+        out.write_text(templates.loop_and_jump(a, b, outgoing, incoming, c))
+        typer.echo(f"wrote {out}  ({finder.summary_line(c).strip()})")
+        return
     for x, y in ((a, b), (b, a)) if both else ((a, b),):
-        cands = finder.find(x, y, top)
+        cands = finder.find(x, y, top, spots_only=spots)
         if as_json:
             typer.echo(finder.to_json(cands, x, y))
             continue
@@ -307,11 +326,11 @@ def find(
         for note in finder.pair_notes(x, y):
             typer.echo(f"  {note}")
         if not cands:
-            typer.echo("  no shared words, sound-alikes or rhymes found")
+            typer.echo("  no pairs at your spots" if spots else "  no shared words, sound-alikes or rhymes found")
         for c in cands:
             typer.echo("  " + finder.summary_line(c))
     if not as_json:
-        typer.echo("\n(score 0–1 · ⚑ at a cue you marked · ✓ confirmed by Whisper · ? not heard by Whisper · "
+        typer.echo("\n(score 0–1 · ◆out/◆in at your wordplay spot · ⚑ at a cue you marked · ✓ confirmed by Whisper · ? not heard by Whisper · "
                    "#n = which time it's sung)")
 
 

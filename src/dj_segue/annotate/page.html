@@ -82,6 +82,8 @@
   #cueRows td { white-space: nowrap; }
   #cueRows input[type=text].name { width: 170px; font-weight: 600; }
   #cueRows .del { color: var(--bad); }
+  #cueRows input[type=text].word { width: 110px; }
+  #cueRows select.role.on { border-color: var(--cue); color: var(--cue); font-weight: 600; }
   :root { --cue: #e0457b; }
   #toast { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 12px;
            border-radius: 8px; background: var(--panel); border: 1px solid var(--bad); color: var(--bad);
@@ -137,7 +139,8 @@
     <div class="row">
       <h2 style="margin:0">Cues</h2>
       <button id="markCue" title="Mark a cue at the nearest beat to what you're hearing (m). ⇧M marks the exact moment.">⚑ Mark cue here</button>
-      <span class="keys">Name a point anything ("drop", "clean_exit"); plans use it as <kbd>{ "cue": "drop" }</kbd>. <kbd>m</kbd> snaps to the beat · <kbd>⇧M</kbd> exact moment</span>
+      <span class="keys">Name a point anything ("drop", "clean_exit"); plans use it as <kbd>{ "cue": "drop" }</kbd>. <kbd>m</kbd> snaps to the beat · <kbd>⇧M</kbd> exact moment.
+        A <b>wordplay spot</b> is a cue with a role: <b>out</b> = this song can leave here on the word (looping from the cue), <b>in</b> = another song can come in here on it. <kbd>dj-segue find</kbd> puts your spots first.</span>
     </div>
     <table style="margin-top:6px"><tbody id="cueRows"></tbody></table>
   </div>
@@ -239,7 +242,7 @@ let buf = null, clickBuf = null, ctx = null, master = null, clickGain = null, dr
 let src = null, clickSrc = null, drone = [];
 const st = { playing: false, offset: 0, startCtx: 0, startOff: 0, loop: null, click: false };
 let dragB = null;       // boundary drag: {i, x0}
-let cues = [];          // [{name, second, note}] — named points, saved with the annotation
+let cues = [];          // [{name, second, note, role, word, loop}] — named points (role: a wordplay spot), saved with the annotation
 let WT = null;          // word timing from `dj-segue words`: {words: [{text, start, end, score, source, confirmed, line}], …}
 let wordSpans = [];     // the lyrics panel's word elements, by word index
 let nowWord = -1;       // index of the word being heard (or the last one before it)
@@ -451,7 +454,7 @@ function toast(text) {
 function cueName() { let n = cues.length + 1; while (cues.some((c) => c.name === `cue ${n}`)) n++; return `cue ${n}`; }
 function markCue(exact) {
   const t = heard(), sec = exact ? t : Math.max(0, secOf(Math.round(beatAt(t))));
-  const cue = { name: cueName(), second: +sec.toFixed(4), note: "" };
+  const cue = { name: cueName(), second: +sec.toFixed(4), note: "", role: "", word: "", loop: null };
   cues.push(cue);
   cues.sort((a, b) => a.second - b.second);
   cueChanged();
@@ -464,7 +467,7 @@ function renderCues() {
   const tb = $("cueRows"); tb.textContent = "";
   if (!cues.length) { tb.innerHTML = '<tr><td class="keys">No cues yet — play the track and press <kbd>m</kbd> where you want one.</td></tr>'; return; }
   cues.forEach((c, i) => {
-    const tr = document.createElement("tr"), b = beatAt(c.second);
+    const tr = document.createElement("tr"), b = Math.round(beatAt(c.second) * 1e4) / 1e4;  // a cue on beat 0 isn't bar -1
     tb.append(tr);
     const cell = (...els) => { const td = document.createElement("td"); td.append(...els); tr.append(td); return td; };
     const btn = (text, title, fn, cls = "") => { const x = document.createElement("button"); x.textContent = text; x.title = title; x.className = cls; x.onclick = fn; return x; };
@@ -481,11 +484,47 @@ function renderCues() {
     cell(btn("−1 beat", "Move it a beat earlier", () => { c.second = +Math.max(0, c.second - beatSec()).toFixed(4); cueChanged(); }),
          btn("+1 beat", "Move it a beat later", () => { c.second = +Math.min(A.duration_sec, c.second + beatSec()).toFixed(4); cueChanged(); }),
          btn("Here", "Move it to what you're hearing, snapped to the beat", () => { c.second = +Math.max(0, secOf(Math.round(beatAt(heard())))).toFixed(4); cueChanged(); }));
+    const role = document.createElement("select"); role.className = "role" + (c.role ? " on" : "");
+    role.title = "Make it a wordplay spot: out = this song can leave here on the word, in = another song can come in here on it";
+    for (const [v, t] of [["", "plain cue"], ["out", "spot: out"], ["in", "spot: in"], ["both", "spot: in / out"]]) role.add(new Option(t, v));
+    role.value = c.role || "";
+    role.onchange = () => {
+      c.role = role.value;
+      if (c.role && !c.word) c.word = wordNear(c.second, c.name);
+      if (!c.role) { c.word = ""; c.loop = null; }
+      cueChanged();
+    };
+    const word = document.createElement("input"); word.type = "text"; word.className = "word"; word.value = c.word || "";
+    word.placeholder = "word"; word.title = "The word (or phrase) this spot is for";
+    word.onchange = () => { c.word = word.value.trim().replace(/\s+/g, " "); cueChanged(); };
+    const loop = document.createElement("select"); loop.title = "How much an out spot loops from the cue";
+    for (const [v, t] of [["", "loop 1 bar"], ["2", "loop ½ bar"], ["8", "loop 2 bars"]]) loop.add(new Option(t, v));
+    loop.value = c.loop ? String(c.loop) : "";
+    loop.onchange = () => { c.loop = loop.value ? +loop.value : null; cueChanged(); };
+    word.hidden = !c.role; loop.hidden = !(c.role === "out" || c.role === "both");
+    cell(role, word, loop);
     const note = document.createElement("input"); note.type = "text"; note.value = c.note; note.placeholder = "note (optional)";
     note.oninput = () => { c.note = note.value; dirty = true; $("dirty").hidden = false; };
     cell(note).style.width = "100%";
     cell(btn("✕", "Delete this cue", () => { cues.splice(i, 1); cueChanged(); }, "del"));
   });
+}
+// The word a new spot is for: the cue's name when that's sung within two beats
+// (you named it after the word; the aligner may be a little off), else the
+// sung word it's on, else the nearest starting within a beat.
+function wordNear(sec, name) {
+  const clean = (t) => t.replace(/[^\w' ]+/g, "").trim().toLowerCase();
+  const named = /^cue \d+$/.test(name) ? "" : clean(name);
+  if (!WT || !WT.words.length) return named;
+  if (named && WT.words.some((w) => clean(w.text) === named.split(" ")[0] && Math.abs(w.start - sec) <= 2 * beatSec()))
+    return named;
+  let best = null;
+  for (const w of WT.words) {
+    if (w.start - 0.05 <= sec && sec < w.end) return clean(w.text);
+    const d = Math.abs(w.start - sec);
+    if (d <= beatSec() && (best === null || d < Math.abs(best.start - sec))) best = w;
+  }
+  return best ? clean(best.text) : named;
 }
 function drawCueFlags(g, x, top, bottom, dpr, labels) {
   g.font = `600 ${10 * dpr}px -apple-system, sans-serif`; g.textBaseline = "top";
@@ -494,9 +533,10 @@ function drawCueFlags(g, x, top, bottom, dpr, labels) {
     if (xx < -50 || xx > g.canvas.width + 2) continue;
     g.fillStyle = css("--cue"); g.fillRect(xx, top, 2 * dpr, bottom - top);
     if (!labels) continue;
-    const w = g.measureText(c.name).width + 8 * dpr;
+    const label = c.role ? `◆${c.role === "both" ? "in/out" : c.role} ${c.word || c.name}` : c.name;
+    const w = g.measureText(label).width + 8 * dpr;
     g.fillRect(xx, top, w, 14 * dpr);
-    g.fillStyle = "#fff"; g.fillText(c.name, xx + 4 * dpr, top + 2 * dpr);
+    g.fillStyle = "#fff"; g.fillText(label, xx + 4 * dpr, top + 2 * dpr);
   }
 }
 
@@ -807,7 +847,8 @@ function renderKey() {
 function load(data, regridded) {
   A = data;
   phrases = A.phrases.map((p) => ({ bar: p.bar, label: p.label, note: p.note }));
-  cues = (A.cues || []).map((c) => ({ name: c.name, second: c.second, note: c.note || "" }));
+  cues = (A.cues || []).map((c) => ({ name: c.name, second: c.second, note: c.note || "",
+                                      role: c.role || "", word: c.word || "", loop: c.loop ?? null }));
   selected = Math.min(selected, phrases.length - 1);
   $("title").textContent = A.audio.split("/").pop();
   document.title = `Annotate — ${$("title").textContent}`;

@@ -21,12 +21,42 @@ Each candidate pairs one occurrence in A with one in B and is scored
   - fit: the word lands on the same beat of the bar in both (a handoff can
     keep both grids in step).
 
+Wordplay is heard as a pair: A sings the word, then B sings it right after
+(within a bar or two), never both at once — a swap inside one word merges
+the two into one and nothing is heard.
+
+Never mid-section: in both songs the transition sits at a section boundary
+— A's word, and where B comes in, in a section's first or last bar (so a
+pickup into the next section counts). Looping a mid-verse word doesn't make
+it a boundary. (Tracks without annotated sections skip this check.)
+
+**Wordplay spots** — cues you marked in annotate with a role ("out": this
+song can leave here; "in": another can come in here; "both") and a word —
+override all of that: your ear has judged them. A spot takes the place of
+the nearest time its word is sung (or stands in for it if the aligner
+missed it), skips the boundary and line checks on its side, and pairs that
+use spots rank first (`find(..., spots_only=True)` lists only those).
+
+Never in the middle of vocals: a transition doesn't cut through a sung
+line. Each occurrence knows where it sits in its line (`edge`: "start",
+"end", "alone" or "mid"; a line ends at a lyric line break or a gap of a beat
+or more). B's vocal comes in on its word or at the start of its line — when
+the word is sung within a bar of it (`lead`), B can come in there and loop
+and jump still works. A's word must end a line, unless A loops it (the loop
+lifts the word out of its line).
+
 Per match it keeps the best-scoring pair, and suggests a technique:
-  - **vocal handoff**: beats in the bar line up (within ¼ beat) — B comes in
-    bar-aligned and the vocals swap on the word;
-  - **loop and jump**: B's word starts a hook or its pickup — loop A's bar
-    with the word while B's intro comes in, then jump B to its word;
-  - **echo out**: otherwise — A echoes out on its word, B comes in on its.
+  - **loop and jump**: loop A's word while B's intro comes in, then jump B to
+    its word, or to the start of its line when the word is sung within a bar
+    of it (A's word may sit anywhere in its line);
+  - **vocal handoff**: A's word ends a line, B's starts one, and they land on
+    the same beat of the bar (within ¼ beat) — B comes in bar-aligned with its
+    word a bar after A's, and the vocals swap between the two;
+  - **echo out**: A's word ends a line, B's starts one — A echoes out on its
+    word, B comes in on its.
+A pair where B's word is further into its line fits none, and is left out.
+B's word leading into a hook (its pickup, or the hook's first word) counts as
+the most prominent place B can come in.
 
 The tempo gap and key relation are reported for the pair (they don't change
 the ranking within it). Output never includes lyric lines: single words,
@@ -86,6 +116,13 @@ class Occurrence:
     score: float  # alignment score
     nth: int  # which time this word (or phrase) is sung, from 1
     cue: str | None = None  # a cue marked here, named after the word: checked by ear
+    edge: str = "alone"  # where it sits in its sung line: "start" | "end" | "alone" | "mid"
+    index: int = -1  # in the track's words (a phrase: its first word)
+    last: int = -1  # its last word
+    line_first: int = -1  # the first word of its sung line
+    lead: float = 0.0  # beats from the start of its line to it
+    spot: str = ""  # at your wordplay spot: its role, "out" | "in" | "both"
+    loop: float | None = None  # an out spot's loop, in beats
 
 
 @dataclass
@@ -117,6 +154,7 @@ class Track:
     words: list  # merge.Word, lyric words when there are lyrics
     counts: dict[str, int]  # normalized word → times sung
     cues: dict[str, float] = field(default_factory=dict)  # marked in the annotation: name → second
+    spots: list = field(default_factory=list)  # annotate.Cue with a role: your wordplay spots
 
 
 def load_track(audio_path: Path, folder: Path = Path("annotations")) -> Track:
@@ -137,6 +175,8 @@ def load_track(audio_path: Path, folder: Path = Path("annotations")) -> Track:
         ann = load(path)
         if ann.audio_sha1 != file_sha1(audio_path):
             ann = None
+    spots = [c for c in ann.cues if c.role] if ann else []
+    words = with_spots(words, spots, ann.bpm if ann else None)
     counts: dict[str, int] = {}
     for w in words:
         k = norm(w.text)
@@ -153,7 +193,24 @@ def load_track(audio_path: Path, folder: Path = Path("annotations")) -> Track:
         words=words,
         counts=counts,
         cues={c.name: c.second for c in ann.cues} if ann else {},
+        spots=spots,
     )
+
+
+def with_spots(words: list, spots: list, bpm: float | None) -> list:
+    """`words`, plus a stand-in (source "spot") for each spot whose word isn't
+    sung within CUE_NEAR_BEATS of it — so a spot counts even where the
+    aligner missed the word (a chant Whisper skipped)."""
+    from dj_segue.words.merge import Word, norm
+
+    near = CUE_NEAR_BEATS * (60.0 / bpm if bpm else 0.5)
+    extra = []
+    for c in spots:
+        toks = [norm(t) for t in c.word.split()]
+        if not any(norm(w.text) == toks[0] and abs(w.start - c.second) <= near for w in words):
+            extra += [Word(t, c.second + 0.3 * k, c.second + 0.3 * k + 0.25, 1.0, "spot", True, None)
+                      for k, t in enumerate(c.word.split())]
+    return sorted(words + extra, key=lambda w: w.start) if extra else words
 
 
 # -- sounds ----------------------------------------------------------------
@@ -192,28 +249,71 @@ def relation(a: str, b: str) -> str | None:
 
 
 CUE_NEAR_BEATS = 2.0  # a cue this close to a word, named after it, marks that word
+LINE_GAP_BEATS = 1.0  # a silence this long between words ends a sung line
+LEAD_MAX_BEATS = 4.0  # B can come in at its line's start when its word follows within this
 
 
-def _occurrence(t: Track, i: int, nth: int) -> Occurrence:
-    """Where word i is; if you marked a cue named after it nearby, there
+def _breaks(t: Track, i: int, j: int) -> bool:
+    """Does a sung line end between words i and j (i < j)?"""
+    if i < 0 or j >= len(t.words):
+        return True
+    wi, wj = t.words[i], t.words[j]
+    gap = LINE_GAP_BEATS * (60.0 / t.bpm if t.bpm else 0.6)
+    return (wi.line is not None and wj.line is not None and wi.line != wj.line) or wj.start - wi.end >= gap
+
+
+def at_boundary(t: Track, beat: float | None) -> bool:
+    """Is `beat` in the first or last bar of a section? True when the track
+    has no sections to check against."""
+    if not t.sections or beat is None:
+        return True
+    bar = int(beat // 4 + 1e-6)
+    return any(bar in (s, e - 1) for s, e, _ in t.sections)
+
+
+def line_first(t: Track, i: int) -> int:
+    """The first word of the sung line word i is in."""
+    while not _breaks(t, i - 1, i):
+        i -= 1
+    return i
+
+
+def line_edge(t: Track, first: int, last: int) -> str:
+    """Where words first..last sit in their sung line: "start", "end",
+    "alone" (both) or "mid"."""
+    starts, ends = _breaks(t, first - 1, first), _breaks(t, last, last + 1)
+    return "alone" if starts and ends else "start" if starts else "end" if ends else "mid"
+
+
+def _occurrence(t: Track, i: int, nth: int, n: int = 1) -> Occurrence:
+    """Where word i (and the phrase of n words it starts) is; if you marked a cue named after it nearby, there
     instead (your ear beats the aligner)."""
     from dj_segue.words.merge import norm
 
     w = t.words[i]
-    start, cue = w.start, None
+    start, cue, spot, loop = w.start, None, "", None
     beat_len = 60.0 / t.bpm if t.bpm else 0.5
     key = norm(w.text)
-    for name, sec in t.cues.items():
-        if key and key in norm(name) and abs(sec - w.start) <= CUE_NEAR_BEATS * beat_len:
-            start, cue = sec, name
+    text = " ".join(norm(x.text) for x in t.words[i : i + n])
+    for c in t.spots:
+        if " ".join(norm(x) for x in c.word.split()) == text and abs(c.second - w.start) <= CUE_NEAR_BEATS * beat_len:
+            start, cue, spot, loop = c.second, c.name, c.role, c.loop
             break
+    else:
+        for name, sec in t.cues.items():
+            if key and key in norm(name) and abs(sec - w.start) <= CUE_NEAR_BEATS * beat_len:
+                start, cue = sec, name
+                break
     beat = bar = None
     section = "?"
     if t.bpm and t.anchor is not None:
         beat = (start - t.anchor) * t.bpm / 60.0
         bar = int(beat // 4 + 1e-6)
         section = next((lab for a, b, lab in t.sections if a <= bar < b), "?")
-    return Occurrence(w.text, start, beat, bar, section, w.confirmed, w.score, nth, cue)
+    first = line_first(t, i)
+    lead = (w.start - t.words[first].start) / beat_len
+    return Occurrence(w.text, start, beat, bar, section, w.confirmed, w.score, nth, cue,
+                      line_edge(t, i, i + n - 1), i, i + n - 1, first, lead, spot, loop)
 
 
 def _key_words(t: Track):
@@ -244,15 +344,33 @@ def _phrases(t: Track, n: int):
         yield p, i, seen[p]
 
 
-def find(a: Track, b: Track, top: int = 10) -> list[Candidate]:
-    """Candidates for a transition from `a` into `b`, best first; one (the
-    best pair) per matching word or phrase."""
+def out_spot(o: Occurrence) -> bool:
+    return o.spot in ("out", "both")
+
+
+def in_spot(o: Occurrence) -> bool:
+    return o.spot in ("in", "both")
+
+
+def spots_used(c: Candidate) -> int:
+    return out_spot(c.a) + in_spot(c.b)
+
+
+def find(a: Track, b: Track, top: int = 10, spots_only: bool = False) -> list[Candidate]:
+    """Candidates for a transition from `a` into `b`, best first (pairs at
+    your spots before the rest); one (the best pair) per matching word or
+    phrase. `spots_only`: only pairs that use at least one of your spots."""
     best: dict[tuple, Candidate] = {}
 
     def consider(kind, ka, ia, na, kb, ib, nb):
-        c = score(a, b, kind, ka, kb, _occurrence(a, ia, na), _occurrence(b, ib, nb))
+        c = score(a, b, kind, ka, kb, _occurrence(a, ia, na, len(ka.split())),
+                  _occurrence(b, ib, nb, len(kb.split())))
+        if not c.technique:
+            return  # B's word is mid-line: no transition fits without cutting through vocals
+        if spots_only and not spots_used(c):
+            return
         key = (kind, ka, kb)
-        if key not in best or c.score > best[key].score:
+        if key not in best or (spots_used(c), c.score) > (spots_used(best[key]), best[key].score):
             best[key] = c
 
     bw = list(_key_words(b))
@@ -277,7 +395,7 @@ def find(a: Track, b: Track, top: int = 10) -> list[Candidate]:
     phrases = [c for c in best.values() if c.kind == "phrase"]
     out = [c for c in best.values() if not (
         c.kind == "same" and any(c.a_text in p.a_text.split() and p.score >= c.score for p in phrases))]
-    out.sort(key=lambda c: -c.score)
+    out.sort(key=lambda c: (-spots_used(c), -c.score))
     return out[:top]
 
 
@@ -285,7 +403,11 @@ def score(a: Track, b: Track, kind: str, ta: str, tb: str, oa: Occurrence, ob: O
     def prominence(t: Track, o: Occurrence, text: str, outgoing: bool) -> float:
         words = text.split()
         title = 1.0 if any(w in t.title_words for w in words) else 0.0
+        if (out_spot if outgoing else in_spot)(o):
+            return 1.0  # your spot: as prominent as it gets
         section = SECTION.get(o.section, 0.5)
+        if not outgoing:  # B comes in best leading into a hook, then in one
+            section = 1.0 if into_hook(t, o) else 0.85 * section
         repeats = min(1.0, (t.counts.get(words[0], 1) - 1) / 6)
         late = 1.0
         if outgoing and t.duration:
@@ -311,39 +433,72 @@ def score(a: Track, b: Track, kind: str, ta: str, tb: str, oa: Occurrence, ob: O
         "fit": round(fit, 3),
     }
     total = sum(WEIGHTS[k] * v for k, v in parts.items())
-    technique, why = suggest(b, oa, ob, phase_gap)
+    technique, why = suggest(a, b, oa, ob, phase_gap)
     return Candidate(kind, ta, tb, oa, ob, round(total, 3), parts, technique, why)
 
 
-def suggest(b: Track, oa: Occurrence, ob: Occurrence, phase_gap: float | None) -> tuple[str, str]:
-    """The techniques that fit (best first), and why."""
+def suggest(a: Track, b: Track, oa: Occurrence, ob: Occurrence, phase_gap: float | None) -> tuple[str, str]:
+    """The techniques that fit (best first), and why; none ("", reason) when
+    either song would change mid-section, or B's word is too far into its line."""
+    a_spot, b_spot = out_spot(oa), in_spot(ob)
+    b_starts = b_spot or ob.edge in ("start", "alone")
+    if not b_starts and ob.lead > LEAD_MAX_BEATS:
+        return "", "B's word is in the middle of a sung line"
+    if not a_spot and not at_boundary(a, oa.beat):
+        return "", "A's word is mid-section"
+    if not b_spot and not at_boundary(b, ob.beat if b_starts or ob.beat is None else ob.beat - ob.lead):
+        return "", "B would come in mid-section"
+    if a_spot or b_spot:
+        mine = " and ".join(x for x, y in (("A's out spot", a_spot), ("B's in spot", b_spot)) if y)
+        found = [("loop and jump", f"at your spots ({mine}): loop A from its word while B's intro "
+                  "comes in, then jump B to its word")]
+        if b_spot and oa.edge in ("end", "alone") and not a_spot:
+            found.append(("echo out", "A's word ends a line: A echoes out on it; B's word comes in during the echo"))
+        return " or ".join(t for t, _ in found), "; ".join(w for _, w in found)
     found = []
-    if phase_gap is not None and phase_gap <= HANDOFF_PHASE:
+    into = into_hook(b, ob)
+    into = f", {into}" if into else ""
+    a_ends = oa.edge in ("end", "alone")
+    loop = ("loop and jump", (f"B's word starts a line{into}: loop A's word while B's intro comes in, "
+                              "then jump B to its word") if b_starts else
+            (f"B's word comes {ob.lead:.1f} beats into its line{into}: loop A's word while B's intro "
+             "comes in, then jump B to the start of that line"))
+    if not b_starts:
+        return loop  # B can only come in at the start of its line
+    if into or not a_ends:
+        found.append(loop)  # a hook entry, or the only way out of A mid-line
+    if a_ends and phase_gap is not None and phase_gap <= HANDOFF_PHASE:
         found.append(("vocal handoff",
-                      f"the word falls {phase_gap:.2f} beats apart in the bar in both: bring B in "
-                      "bar-aligned and swap vocals on it"))
-    if ob.bar is not None and ob.beat is not None and b.sections:
-        starts = {a: lab for a, _, lab in b.sections}
-        pickup = ob.beat % 4 >= 2 and starts.get(ob.bar + 1) in ("hook", "pre-hook", "drop")
-        opener = ob.beat % 4 < 1 and starts.get(ob.bar) in ("hook", "pre-hook", "drop")
-        if pickup or opener:
-            found.append(("loop and jump",
-                          f"B's word {'is the pickup into' if pickup else 'opens'} its "
-                          f"{starts.get(ob.bar + 1) if pickup else starts.get(ob.bar)}: loop A's bar with "
-                          "the word while B's intro comes in, then jump B to its word"))
-    if not found:
-        found.append(("echo out", "A echoes out on its word; B comes in on its word"))
+                      f"A's word ends a line and B's starts one, {phase_gap:.2f} beats apart in the bar: "
+                      "bring B in bar-aligned with its word a bar after A's, and swap vocals between them"))
+    if a_ends:
+        found.append(("echo out", "A's word ends a line: A echoes out on it; B's word comes in during the echo"))
+        if not into:
+            found.append(loop)
     return " or ".join(t for t, _ in found), "; ".join(w for _, w in found)
+
+
+def into_hook(b: Track, ob: Occurrence) -> str:
+    """"the pickup into its hook" / "opening its hook" when B's word leads
+    into a hook (pre-hook, drop), else ""."""
+    if ob.bar is None or ob.beat is None or not b.sections:
+        return ""
+    starts = {a: lab for a, _, lab in b.sections}
+    if ob.beat % 4 >= 2 and starts.get(ob.bar + 1) in ("hook", "pre-hook", "drop"):
+        return f"the pickup into its {starts[ob.bar + 1]}"
+    if ob.beat % 4 < 1 and starts.get(ob.bar) in ("hook", "pre-hook", "drop"):
+        return f"opening its {starts[ob.bar]}"
+    return ""
 
 
 def summary_line(c: Candidate) -> str:
     def where(o: Occurrence) -> str:
         pos = f"bar {o.bar} beat {o.beat % 4 + 1:.2f}" if o.beat is not None else f"{o.start:.1f}s"
-        mark = "⚑" if o.cue else "✓" if o.confirmed else ("?" if o.confirmed is False else "")
-        return f"{pos} {o.section} #{o.nth}{mark}"
+        mark = f"◆{o.spot}" if o.spot else "⚑" if o.cue else "✓" if o.confirmed else ("?" if o.confirmed is False else "")
+        return f"{pos} {o.section} #{o.nth}{mark} {o.edge}"
 
     match = c.a_text if c.a_text == c.b_text else f"{c.a_text} / {c.b_text}"
-    return (f"{c.score:.2f}  {c.kind:<11} {match!r:<24} A: {where(c.a):<28} B: {where(c.b):<28} → {c.technique}")
+    return (f"{c.score:.2f}  {c.kind:<11} {match!r:<24} A: {where(c.a):<34} B: {where(c.b):<34} → {c.technique}")
 
 
 def pair_notes(a: Track, b: Track) -> list[str]:

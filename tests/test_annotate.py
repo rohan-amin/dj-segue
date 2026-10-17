@@ -219,6 +219,29 @@ def test_cues_save_and_reach_the_planner(served) -> None:
     assert len(load(session.out_path).cues) == 2
 
 
+def test_wordplay_spots_save_and_reach_the_planner(served) -> None:
+    """A cue with a role is a wordplay spot: it keeps its word and (out) loop;
+    a plain cue's file entry stays {name, second, note}."""
+    session, url = served
+    res = _post(url, "/save", {"phrases": [], "cues": [
+        {"name": "everybody", "second": 2.0, "role": "out", "word": " every  body ", "loop": 8},
+        {"name": "in here", "second": 3.0, "role": "in", "word": "walk", "loop": 8},
+        {"name": "plain", "second": 4.0}]})
+    assert res["ok"]
+    saved = load(session.out_path)
+    out, inn, plain = saved.cues
+    assert (out.role, out.word, out.loop) == ("out", "every body", 8.0)
+    assert (inn.role, inn.loop) == ("in", None)  # only an out spot loops
+    on_disk = json.loads(session.out_path.read_text())["cues"]
+    assert set(on_disk[2]) == {"name", "second", "note"}
+    cues = summary(saved)["cues"]
+    assert cues[0]["role"] == "out" and cues[0]["loop_beats"] == 8.0 and "role" not in cues[2]
+    for bad in ([{"name": "a", "second": 1, "role": "sideways", "word": "x"}],
+                [{"name": "a", "second": 1, "role": "out"}],  # a spot needs its word
+                [{"name": "a", "second": 1, "role": "out", "word": "x", "loop": 0}]):
+        assert not _post(url, "/save", {"phrases": [], "cues": bad})["ok"]
+
+
 def test_cues_stay_put_when_the_grid_moves(served) -> None:
     session, url = served
     _post(url, "/save", {"phrases": [], "cues": [{"name": "x", "second": 3.0}]})
