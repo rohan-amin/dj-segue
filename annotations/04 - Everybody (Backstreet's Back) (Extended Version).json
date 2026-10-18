@@ -771,14 +771,22 @@
  ],
  "cues": [
   {
-   "name": "end short intro",
+   "name": "intro",
+   "second": 1.5462,
+   "note": "intro and build"
+  },
+  {
+   "name": "end intro",
    "second": 9.8747,
    "note": ""
   },
   {
    "name": "everybody",
    "second": 116.4793,
-   "note": ""
+   "note": "great place to drop into the song",
+   "role": "in",
+   "word": "everybody",
+   "loop": null
   }
  ],
  "version": 1
