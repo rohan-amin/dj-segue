@@ -498,8 +498,10 @@ function renderCues() {
     word.placeholder = "word"; word.title = "The word (or phrase) this spot is for";
     word.onchange = () => { c.word = word.value.trim().replace(/\s+/g, " "); cueChanged(); };
     const loop = document.createElement("select"); loop.title = "How much an out spot loops from the cue";
-    for (const [v, t] of [["", "loop 1 bar"], ["2", "loop ½ bar"], ["8", "loop 2 bars"]]) loop.add(new Option(t, v));
-    loop.value = c.loop ? String(c.loop) : "";
+    const beats = [1, 2, 3, 4, 6, 8, 12, 16];
+    if (c.loop && !beats.includes(c.loop)) beats.push(c.loop), beats.sort((p, q) => p - q);
+    for (const b of beats) loop.add(new Option(`loop ${b} beat${b === 1 ? "" : "s"}${b === 4 ? " (1 bar)" : b % 4 ? "" : ` (${b / 4} bars)`}`, b === 4 ? "" : String(b)));
+    loop.value = c.loop && c.loop !== 4 ? String(c.loop) : "";
     loop.onchange = () => { c.loop = loop.value ? +loop.value : null; cueChanged(); };
     word.hidden = !c.role; loop.hidden = !(c.role === "out" || c.role === "both");
     cell(role, word, loop);

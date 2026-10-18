@@ -1,0 +1,82 @@
+// Let's Get It Started into Everybody, on "everybody" — loop and jump (dj-segue find → template).
+//
+//   - Let's Get It Started plays from bar 30 to its "everybody" (bar 40, pre-hook).
+//   - There it loops your spot (2 beats ×8) while Everybody comes in under it, vocals down: its first 15 beats (≡ its entry in the bar, so the jump keeps its bars in step).
+//   - As the loop ends, Everybody jumps to its "everybody" (bar 51, pre-hook, the pickup into its hook), its vocals up: the word looped, then sung by the next song.
+//   - It plays on to bar 92.
+//   - Tempo: the whole mix at Everybody's 108.063 (+2.9% for Let's Get It Started).
+
+{
+  "schema_version": "0.10",
+  "meta": {
+    "mix_name": "Let's Get It Started into Everybody, on \"everybody\"",
+    "source_prompt": "Template: loop and jump on \"everybody\" / \"everybody\" (dj-segue find)",
+    "mix_tempo": 108.063
+  },
+  "tracks": {
+    "lgis": { "path": "audio/01 - Let's Get It Started (Spike Mix) [Explicit].mp3" },
+    "e": { "path": "audio/04 - Everybody (Backstreet's Back) (Extended Version).mp3" }
+  },
+  "decks": { "1": { "label": "lgis" }, "2": { "label": "e" } },
+  "timeline": [
+    {
+      "type": "play",
+      "id": "lgis",
+      "deck": 1,
+      "track": "lgis",
+      "from": { "bar": 30 },
+      "to": { "cue": "everybody" },
+      "start_at": { "beat": 0 },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "loop",
+      "id": "lgis_loop",
+      "deck": 1,
+      "track": "lgis",
+      "from": { "cue": "everybody" },
+      "start_at": { "after": "lgis" },
+      "target_bpm": "mix",
+      "schedule": [ { "length": { "beats": 2 }, "repetitions": 8 } ]
+    },
+    {
+      "type": "play",
+      "id": "e_bed",
+      "deck": 2,
+      "track": "e",
+      "from": { "beat": 0 },
+      "to": { "beat": 15 },
+      "start_at": { "after": "lgis" },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "play",
+      "id": "e_main",
+      "deck": 2,
+      "track": "e",
+      "from": { "cue": "everybody" },
+      "to": { "bar": 92 },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "transition",
+      "style": "crossfade",
+      "from_deck": 1,
+      "to_deck": 2,
+      "start_at": { "after": "lgis" },
+      "duration": { "beats": 15 },
+      "out": { "offset": { "beats": 13 }, "duration": { "beats": 2 } }
+    }
+  ],
+  "automation": [
+    {
+      "lane": "stem_volume",
+      "deck": 2,
+      "stem": "vocals",
+      "keyframes": [
+        { "at": { "after": "lgis", "offset": { "beats": 14.95 } }, "value": 0 },
+        { "at": { "after": "lgis", "offset": { "beats": 15 } }, "value": 1 }
+      ]
+    }
+  ]
+}

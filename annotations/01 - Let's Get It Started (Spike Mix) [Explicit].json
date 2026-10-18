@@ -586,7 +586,10 @@
   {
    "name": "everybody",
    "second": 92.7241,
-   "note": ""
+   "note": "can loop into another song that uses the word everybody",
+   "role": "out",
+   "word": "everybody",
+   "loop": 2.0
   }
  ],
  "version": 1
