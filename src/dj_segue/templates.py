@@ -5,7 +5,8 @@
   1. A plays from a section start some bars before its word, up to the beat
      the word is on (at or just before it).
   2. A loops a bar from that beat — a musical loop with the word at its
-     head, not a stutter — while B's bed (B with its vocals down) crossfades in.
+     head, not a stutter — dying away while B's bed (B with its vocals down)
+     crossfades in over it.
   3. B jumps to its word (or the start of its line, when the word comes
      within a bar of it) as the loop ends, its vocals back up: A's word
      repeating, then B singing it — the pair heard back to back, and no
@@ -37,13 +38,16 @@ A_LEAD_BARS = 8  # A plays at least this long before its word
 BED_MIN, BED_MAX = 8.0, 16.0  # beats of B under the loop
 ENTRY_PREROLL = 0.1  # beats before B's entry word, so its attack isn't clipped
 B_PLAY_BARS = 16  # B plays at least this long after it comes in, to the end of a hook
-A_HOLD_BEATS = 2.0  # A's loop stays up until this long before B's entry, then fades
 SAME_TEMPO = 0.04  # within this, the whole mix runs at B's tempo
 
 
 def track_id(t: Track) -> str:
-    """Initials of the title: "Let's Get It Started" → "lgis"."""
-    words = re.findall(r"[A-Za-z0-9']+", _title(t))
+    """Initials of the title: "Let's Get It Started" → "lgis"; a one-word
+    title whole: "Starships" → "starships"."""
+    words = [w.replace("'", "") for w in re.findall(r"[A-Za-z0-9']+", _title(t))]
+    words = [w for w in words if w]
+    if len(words) == 1:
+        return words[0].lower()
     return "".join(w[0] for w in words).lower() or "t"
 
 
@@ -103,6 +107,7 @@ def loop_and_jump(a: Track, b: Track, a_path: Path, b_path: Path, c: Candidate) 
         b_pos = {"word": text, "nth": schema_nth(b, entry, n_e),
                  "offset": {"beats": -ENTRY_PREROLL}}
         j = _beat(b, b.words[entry].start) - ENTRY_PREROLL
+    j = round(j, 3)  # a cue a hair past the beat is on it (else the loop would run a pass too many)
     straight = BED_MIN <= j <= BED_MAX  # B plays from the top to its entry: no jump
     bed = j if straight else 12.0 + (j % 4)
     reps = math.ceil(bed / loop_len - 1e-6)
@@ -139,12 +144,10 @@ def loop_and_jump(a: Track, b: Track, a_path: Path, b_path: Path, c: Candidate) 
             {"type": "play", "id": f"{idb}_main", "deck": 2, "track": idb,
              "from": b_pos, "to": {"bar": b_to}, "target_bpm": "mix"},
         ]
-    # B comes up over the whole bed; A's loop holds until just before B's entry, so the
-    # looped word runs right up to B singing it.
-    hold = min(A_HOLD_BEATS, bed / 2)
+    # A crossfades into B over the whole bed: the loop dies away into B (held up and
+    # then dropped, it sounds cut off), gone as B sings the word, so the two don't merge.
     timeline.append({"type": "transition", "style": "crossfade", "from_deck": 1, "to_deck": 2,
-                     "start_at": {"after": ida}, "duration": {"beats": _fmt(bed)},
-                     "out": {"offset": {"beats": _fmt(bed - hold)}, "duration": {"beats": _fmt(hold)}}})
+                     "start_at": {"after": ida}, "duration": {"beats": _fmt(bed)}})
 
     # B's vocals up as it reaches its entry (B's beats follow the mix's from where it comes in,
     # so the entry is `bed` mix beats after A's word); quickly at a jump, so none of the bed's leak.
@@ -189,7 +192,7 @@ def _norm(text: str) -> str:
 def _title(t: Track) -> str:
     from dj_segue.words.lrclib import clean_title
 
-    stem = re.sub(r"^\d+\s*-\s*", "", Path(t.name).stem)
+    stem = re.sub(r"^(\d+\s*|[^-]+?\s)-\s+", "", Path(t.name).stem)  # "01 - " or "Artist - "
     return re.sub(r"\s*[(\[][^)\]]*[)\]]", "", clean_title(stem)).strip()
 
 

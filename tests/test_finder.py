@@ -184,3 +184,14 @@ def test_a_spot_stands_in_where_the_word_wasnt_aligned() -> None:
     b = track("b", [L("rocket", 95, 0)], whole=True, sections=VERSE)
     c = find(a, b, spots_only=True)[0]
     assert c.a.spot == "out" and c.a.beat == pytest.approx(60.0) and c.a.cue == "chant"
+
+
+def test_a_spot_keeps_a_phrase_of_common_words() -> None:
+    """"one more time" is all common words, which the finder skips as a
+    phrase, unless a spot names it (Starships → One More Time)."""
+    sung = [L("one", 40, 0), L("more", 41, 0), L("time", 42, 0)]
+    b = track("b", [L("one", 60, 3), L("more", 61, 3), L("time", 62, 3)], sections=VERSE)
+    assert not [c for c in find(track("a", sung, sections=VERSE), b) if c.kind == "phrase"]
+    a = track("a", sung, sections=VERSE, spots=[Spot("omt", 40, "out", "One More  Time")])
+    c = find(a, b, spots_only=True)[0]
+    assert (c.kind, c.a_text, c.a.spot) == ("phrase", "one more time", "out")

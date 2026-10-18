@@ -50,6 +50,8 @@ def test_loops_start_on_the_beat_of_the_word() -> None:
 def test_track_ids_and_nth() -> None:
     a = track("01 - Let's Get It Started (Spike Mix) [Explicit].mp3", A_WORDS, A_SECTIONS)
     assert track_id(a) == "lgis"
+    assert track_id(track("01 - Like 'em All (Radio Version).mp3", [], ())) == "lea"
+    assert track_id(track("DJ's International - Starships (Original Mix).mp3", [], ())) == "starships"
     b = track("b", [L("go", 1, 0), L("go", 2, 0), L("rocket", 3, 0), L("go", 4, 0)], A_SECTIONS)
     assert schema_nth(b, 3, 1) == 3 and schema_nth(b, 2, 1) == 1
 
@@ -71,6 +73,8 @@ def test_jump_to_the_line_start_keeps_b_in_step(tmp_path) -> None:
     assert bed == pytest.approx(12.9) and bed % 4 == pytest.approx((93 - 0.1) % 4)
     assert segs["b_main"]["from"] == {"word": "ride", "nth": 1, "offset": {"beats": -0.1}}
     assert segs["b_main"]["to"] == {"bar": 40}  # through the hook
+    fade = next(s for s in plan["timeline"] if s["type"] == "transition")
+    assert fade["duration"] == {"beats": bed} and "out" not in fade  # the loop dies into B, not cut
     assert "tempo_map" not in plan["meta"] and plan["meta"]["mix_tempo"] == 120
     vocals = plan["automation"][0]
     assert vocals["stem"] == "vocals" and [k["value"] for k in vocals["keyframes"]] == [0, 1]

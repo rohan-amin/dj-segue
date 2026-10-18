@@ -1,0 +1,81 @@
+// Starships into One More Time, on "one more time" — loop and jump (dj-segue find → template).
+//
+//   - Starships plays from bar 12 to its "one more time" (bar 27, hook).
+//   - There it loops your spot (4 beats ×3) while One More Time comes in under it, vocals down: its first 12 beats (≡ its entry in the bar, so the jump keeps its bars in step).
+//   - As the loop ends, One More Time jumps to its "one more time" (bar 131, ?), its vocals up: the word looped, then sung by the next song.
+//   - It plays on to bar 148.
+//   - Tempo: the whole mix at One More Time's 122.879 (-1.7% for Starships).
+
+{
+  "schema_version": "0.10",
+  "meta": {
+    "mix_name": "Starships into One More Time, on \"one more time\"",
+    "source_prompt": "Template: loop and jump on \"one more time\" / \"one more time\" (dj-segue find)",
+    "mix_tempo": 122.879
+  },
+  "tracks": {
+    "starships": { "path": "audio/DJ's International - Starships (Original Mix).mp3" },
+    "omt": { "path": "audio/01 - One More Time.mp3" }
+  },
+  "decks": { "1": { "label": "starships" }, "2": { "label": "omt" } },
+  "timeline": [
+    {
+      "type": "play",
+      "id": "starships",
+      "deck": 1,
+      "track": "starships",
+      "from": { "bar": 12 },
+      "to": { "cue": "one more time" },
+      "start_at": { "beat": 0 },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "loop",
+      "id": "starships_loop",
+      "deck": 1,
+      "track": "starships",
+      "from": { "cue": "one more time" },
+      "start_at": { "after": "starships" },
+      "target_bpm": "mix",
+      "schedule": [ { "length": { "beats": 4 }, "repetitions": 3 } ]
+    },
+    {
+      "type": "play",
+      "id": "omt_bed",
+      "deck": 2,
+      "track": "omt",
+      "from": { "beat": 0 },
+      "to": { "beat": 12 },
+      "start_at": { "after": "starships" },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "play",
+      "id": "omt_main",
+      "deck": 2,
+      "track": "omt",
+      "from": { "cue": "one more time 2" },
+      "to": { "bar": 148 },
+      "target_bpm": "mix"
+    },
+    {
+      "type": "transition",
+      "style": "crossfade",
+      "from_deck": 1,
+      "to_deck": 2,
+      "start_at": { "after": "starships" },
+      "duration": { "beats": 12 }
+    }
+  ],
+  "automation": [
+    {
+      "lane": "stem_volume",
+      "deck": 2,
+      "stem": "vocals",
+      "keyframes": [
+        { "at": { "after": "starships", "offset": { "beats": 11.95 } }, "value": 0 },
+        { "at": { "after": "starships", "offset": { "beats": 12 } }, "value": 1 }
+      ]
+    }
+  ]
+}

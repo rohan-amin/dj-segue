@@ -267,7 +267,7 @@ def at_boundary(t: Track, beat: float | None) -> bool:
     has no sections to check against."""
     if not t.sections or beat is None:
         return True
-    bar = int(beat // 4 + 1e-6)
+    bar = int(round(beat, 2) // 4)  # a word a hair before a bar line is in that bar
     return any(bar in (s, e - 1) for s, e, _ in t.sections)
 
 
@@ -308,7 +308,7 @@ def _occurrence(t: Track, i: int, nth: int, n: int = 1) -> Occurrence:
     section = "?"
     if t.bpm and t.anchor is not None:
         beat = (start - t.anchor) * t.bpm / 60.0
-        bar = int(beat // 4 + 1e-6)
+        bar = int(round(beat, 2) // 4)
         section = next((lab for a, b, lab in t.sections if a <= bar < b), "?")
     first = line_first(t, i)
     lead = (w.start - t.words[first].start) / beat_len
@@ -328,20 +328,27 @@ def _key_words(t: Track):
             yield k, i, seen[k]
 
 
-def _phrases(t: Track, n: int):
-    """(normalized n-word phrase, index of its first word, nth)."""
+def _phrases(t: Track, n: int, keep: frozenset = frozenset()):
+    """(normalized n-word phrase, index of its first word, nth). Phrases of
+    only common words are skipped unless in `keep` (a spot named them)."""
     from dj_segue.words.merge import norm
 
     keys = [norm(w.text) for w in t.words]
     seen: dict[str, int] = {}
     for i in range(len(keys) - n + 1):
         gram = keys[i : i + n]
-        if not all(gram) or not any(g not in STOP and g not in COMMON for g in gram) or any(
+        p = " ".join(gram)
+        if not all(gram) or (p not in keep and not any(g not in STOP and g not in COMMON for g in gram)) or any(
                 t.words[i + k + 1].start - t.words[i + k].start > 1.5 for k in range(n - 1)):
             continue  # a phrase is sung in one breath
-        p = " ".join(gram)
         seen[p] = seen.get(p, 0) + 1
         yield p, i, seen[p]
+
+
+def _spot_key(word: str) -> str:
+    from dj_segue.words.merge import norm
+
+    return " ".join(k for k in (norm(w) for w in word.split()) if k)
 
 
 def out_spot(o: Occurrence) -> bool:
@@ -384,11 +391,12 @@ def find(a: Track, b: Track, top: int = 10, spots_only: bool = False) -> list[Ca
             if rel:
                 for ib, nb in by_word[kb]:
                     consider(rel, ka, ia, na, kb, ib, nb)
-    for n in (2, 3):
+    keep = frozenset(_spot_key(s.word) for s in a.spots + b.spots if s.word)  # your spots' phrases count, however common
+    for n in sorted({2, 3} | {len(k.split()) for k in keep if len(k.split()) > 1}):
         pb: dict[str, list] = {}
-        for p, i, k in _phrases(b, n):
+        for p, i, k in _phrases(b, n, keep):
             pb.setdefault(p, []).append((i, k))
-        for p, ia, na in _phrases(a, n):
+        for p, ia, na in _phrases(a, n, keep):
             for ib, nb in pb.get(p, []):
                 consider("phrase", p, ia, na, p, ib, nb)
     # A phrase that scores as well supersedes its own words' "same" match.
@@ -493,7 +501,8 @@ def into_hook(b: Track, ob: Occurrence) -> str:
 
 def summary_line(c: Candidate) -> str:
     def where(o: Occurrence) -> str:
-        pos = f"bar {o.bar} beat {o.beat % 4 + 1:.2f}" if o.beat is not None else f"{o.start:.1f}s"
+        rb = round(o.beat, 2) if o.beat is not None else None  # 107.999 reads bar 27 beat 1.00, not bar 26 beat 5.00
+        pos = f"bar {int(rb // 4)} beat {rb % 4 + 1:.2f}" if rb is not None else f"{o.start:.1f}s"
         mark = f"◆{o.spot}" if o.spot else "⚑" if o.cue else "✓" if o.confirmed else ("?" if o.confirmed is False else "")
         return f"{pos} {o.section} #{o.nth}{mark} {o.edge}"
 
