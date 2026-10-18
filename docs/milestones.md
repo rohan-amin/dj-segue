@@ -201,7 +201,7 @@ Pulled forward from the architecture's open question. One engine, run block by b
 
 **Progress (2026-10-11):**
 - **W1 done:** `dj-segue words` — LRCLIB lyrics aligned to the vocals stem (torchaudio wav2vec2), checked against Whisper (faster-whisper large-v3-turbo); merged words, `confirmed` where Whisper heard them; cached in `.cache/words/`. Annotate shows a words lane and a follow-along lyrics panel.
-- **W2 done:** schema v0.10 word positions `{ "word", "nth", "edge", "offset" }` (track), `+ "in": segment` (mix, `swap_at`). Example: `examples/pgw_cil_know.plan.jsonc` (vocal handoff on a shared "know").
+- **W2 done:** schema v0.10 word positions `{ "word", "nth", "edge", "offset" }` (track), `+ "in": segment` (mix, `swap_at`). Its example (`pgw_cil_know`, a handoff on a shared "know") was rated odd (it switched mid-vocals) and removed; `tests/test_v010_words.py` covers word positions.
 - **Cues and tune markers (2026-10-11):** annotate marks named cues (`m`), which any plan can use as `{ "cue": name }`. Tune shows each deck's segments (jumps "→ cue: …"), loops (×N, a tick per pass; length and passes editable, written to the plan and re-rendered) and annotation cues.
 - **Finder (W4) done 2026-10-11:** `dj-segue find a b` — same words / phrases, sound-alikes, rhymes (CMU dictionary), ranked by match, prominence (title, hook), reliability (Whisper, or a cue marked by ear) and beat-of-bar fit; suggests vocal handoff / loop and jump / echo out. Ranks "everybody" first for LGIS → Everybody, at the user's own cue, with loop-and-jump among the suggestions.
 - `dj-segue prepare` gets a new track ready in one step.
