@@ -136,12 +136,13 @@ src/dj_segue/
 │   │   └── ringbuffer.py# lock-free ring buffer (port of ring_buffer.py)
 │   └── mixxx/
 │       └── bridge.py    # MIDI bridge to Mixxx (later milestone)
-├── annotate/            # track annotations (sections, key, cues) + the annotate page
+├── annotate/            # track annotations (sections, key, cues, wordplay spots) + the annotate page
 ├── words/               # word timing: lrclib, align (wav2vec2), transcribe (Whisper), merge
 ├── tune/                # the tune page (transitions by ear; live playback)
 ├── scrub/               # the scrub page (find beats by ear)
 ├── prepare.py           # a new track ready in one step (beats, stems, words, annotation)
 ├── finder.py            # wordplay candidates between two tracks (first piece of the planner)
+├── templates.py         # a finder candidate → a plan (loop and jump)
 ├── inspect/
 │   └── pretty.py        # human-readable plan summaries
 ├── cli/

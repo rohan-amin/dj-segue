@@ -523,3 +523,77 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - Whisper: turbo + `repetition_penalty=1.15`, no VAD, greedy — large-v3 with beam search was 15× slower and no better; turbo without the penalty looped (one word ×203); VAD gating skipped whole verses.
 - A loop's live render is built ahead (4 s); seeking to <~2 s before a loop can still stall briefly.
 - The browser tool's tabs are hidden: `requestAnimationFrame` doesn't run, so call page functions directly when testing.
+
+---
+
+## Session: 2026-10-17
+
+**Milestone:** M6 — Word timing and the planner
+**Duration:** approximately 60 turns
+**Worked on:** wordplay rules from the user's ratings, loop-and-jump templates, wordplay spots in annotate, three tracks annotated with spots
+
+### Completed
+- **Finder rules** (`566634d`), from the user's ratings of `pgw_cil_know` ("odd because the transition happened during vocals") and a blind proposal (C-: "again you are doing a transition mid verse. and the stutter loop was very harsh"):
+  - transitions only at a section's first or last bar, in both songs;
+  - never mid-line (line edges from lyric lines or a gap of a beat or more); B may enter at its line start if its word follows within 4 beats;
+  - the two words heard back to back;
+  - words leading into a hook rank higher.
+- **Templates** (`src/dj_segue/templates.py`, `566634d`; `dj-segue find --plan N [-o path]`): a candidate becomes a loop-and-jump plan:
+  - A plays from a section start 8+ bars before its word and loops a bar from the beat;
+  - B's bed is its first K beats (K ≡ entry mod 4), then it jumps to its word or line start, vocals up;
+  - tempo: B's if within 4%, else a ramp.
+  - It reproduces the user's "perfect" LGIS → Everybody plan.
+- **Wordplay spots** (`566634d`, `8a7efd6`): an annotate cue can take a role (out / in / both), a word and an out loop (1–16 beats). Spots override the rules, rank first, and stand in where a word wasn't aligned. `find --spots` shows only pairs at spots.
+- **Annotated with spots:**
+  - LGIS: "everybody" out, 2-beat loop, bar 40.
+  - Everybody: "everybody" in, bar 51.
+  - Starships (new, `prepare`): "one more time" out, bar 27.
+  - One More Time (new, `prepare`; sections mostly unlabelled): two "one more time" in spots, bars 47 and 131.
+- **LGIS → Everybody from the user's spots** (`examples/lgis_e_everybody.plan.jsonc`): **rated A-**. The blind "walk" proposal was C- and was deleted.
+- **Starships → One More Time** (`afe5b98`):
+  - **Phrase fix:** a phrase a spot names now counts even when every word is common ("one more time" had been dropped as a phrase).
+  - **First render "wasn't good":** it entered on a guessed boundary (bar 71), not the user's spot. Re-made as `starships_omt_spot1/2`, one into each spot.
+  - **Fade:** the user said "you cut the first song off vs. letting the loop die into the second song". A now crossfades out over the whole bed instead of holding and then dropping 2 beats before B.
+- **Fixes:**
+  - a word a hair before a bar line counts in that bar;
+  - titles drop an "Artist - " prefix;
+  - track ids: one-word titles kept whole, apostrophes dropped;
+  - the loop no longer runs a pass too many.
+- **Housekeeping:**
+  - `.DS_Store` untracked (it had been committed in the seed despite `.gitignore`); `uv.lock` ignored;
+  - rejected plans and renders deleted (`pgw_cil_know`, `lgis_pgw_walk`).
+
+### Tests
+- 410 passed, 0 failed (~2.5 min). Up from 395.
+- New: finder rules and spots (test_finder, incl. common-word spot phrases), test_templates (6), wordplay spots in test_annotate.
+
+### Schema or interface changes
+- Plan schema: none (still v0.10).
+- Annotation cues gained optional `role` (`out` / `in` / `both`), `word` and `loop` (beats, out spots only); plain cues are saved as before.
+- `Track.spots`; `find(..., spots_only=)`; new `dj_segue.templates`; `dj-segue find` gained `--spots`, `--plan N`, `--out`.
+
+### Dependencies added/removed
+- none
+
+### Open questions
+- What kept LGIS → Everybody at A- rather than A? Not answered. Candidates: the 2-beat loop (the perfect plan looped a bar), or the vocals' rise.
+- `starships_omt_spot1/2` (re-rendered with the fade) haven't been rated yet.
+- An "in" cue that isn't wordplay (a good place to bring a song in, no shared word) has no role. The user's Everybody "intro" spot was made a plain cue instead.
+- Keys and grids are still unchecked on all six annotated tracks.
+
+### Next session should
+- Listen to and rate `starships_omt_spot1` / `spot2`.
+- Finish One More Time's annotation (label sections, check grid and key).
+- Spots on more tracks: Bottoms Up and Like 'em All (no annotations yet); Pretty Girls Walk and Crazy in Love (no spots).
+- Delete `examples/starships_omt_one_more_time.plan.jsonc` and `renders/starships_omt_one_more_time.wav`. Both are untracked and replaced by the spot plans.
+
+### Notes for future sessions
+- **Ask for spots before proposing blind.** The user's ear beats the rules: spots got A-, the blind pick C-. See memory "Wordplay transition rules".
+- **Wordplay rules:**
+  - never mid-verse in either song;
+  - the two words back to back, not overlapping and not far apart;
+  - bar loops, not ½-beat stutters;
+  - let the loop die into B, don't cut it.
+- **After editing an annotation by hand, stop that song's annotate server.** Saving from the open page overwrites the edit. The server also caches `page.html`, so restart it after page changes.
+- Check spot words for typos: the user's "one more time 2" (the cue's name typed into the word box) could never match. Annotate's prefill may be worth tightening.
+- `prepare` finds no lyrics for files named "Artist - Title" when the artist isn't the singer (Starships by "DJ's International"): words were Whisper only.

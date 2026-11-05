@@ -205,7 +205,8 @@ Pulled forward from the architecture's open question. One engine, run block by b
 - **Cues and tune markers (2026-10-11):** annotate marks named cues (`m`), which any plan can use as `{ "cue": name }`. Tune shows each deck's segments (jumps "→ cue: …"), loops (×N, a tick per pass; length and passes editable, written to the plan and re-rendered) and annotation cues.
 - **Finder (W4) done 2026-10-11:** `dj-segue find a b` — same words / phrases, sound-alikes, rhymes (CMU dictionary), ranked by match, prominence (title, hook), reliability (Whisper, or a cue marked by ear) and beat-of-bar fit; suggests vocal handoff / loop and jump / echo out. Ranks "everybody" first for LGIS → Everybody, at the user's own cue, with loop-and-jump among the suggestions.
 - `dj-segue prepare` gets a new track ready in one step.
-- Next: templates (a candidate → a plan); blind proposals rated by the user; tune words strips.
+- **Wordplay rules, templates and spots (2026-10-17):** the finder only offers transitions at a section's first or last bar in *both* songs, never mid-line, with the two words heard back to back. `dj-segue find --plan N` writes a loop-and-jump plan (A loops a bar from its word and dies away over B's bed; B jumps to its word or line start). Annotate cues can be **wordplay spots** (out / in / both, a word, an out loop of 1–16 beats); spots override the rules and rank first. A blind proposal (LGIS → Pretty Girls Walk on "walk") was rated **C-** (mid-verse, harsh ½-beat stutter); a plan from the user's own spots (LGIS → Everybody) **A-**.
+- Next: rate Starships → One More Time (`starships_omt_spot1/2`); spots on more tracks; tune words strips.
 
 **Scope in:**
 - **Word timing first** (unblocks M3's acceptance test): Whisper word timestamps on the vocals stem, cached per track; plan word cues such as `{ "word": "up", "nth": 2 }` that resolve to a time.
