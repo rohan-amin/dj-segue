@@ -1,0 +1,75 @@
+// examples/weekend_voyager.plan.jsonc
+//
+// Mashup: The Weekend (Radio Edit) over Voyager, mixed by stems. A test mix.
+//
+//   - Tempo: 127, The Weekend's own, so its vocals aren't stretched. Voyager
+//     (119.88) is sped up ~6 %; it's mostly instrumental and takes it well.
+//   - Alignment: Voyager runs 8 bars ahead of The Weekend (Weekend bar N =
+//     Voyager bar N + 8). From the drafted sections (unlabelled; grids and
+//     keys unchecked):
+//         Weekend  0–7   ↔ Voyager  8–15   Voyager intro (no bass)
+//         Weekend  8–31  ↔ Voyager 16–39   groove
+//         Weekend 32–39  ↔ Voyager 40–47   Voyager drops its bass
+//         Weekend 40–55  ↔ Voyager 48–63   groove
+//         Weekend 56–71  ↔ Voyager 64–79   both break down (Weekend's break at 60)
+//         Weekend 72–95  ↔ Voyager 80–103  both grooves back together
+//         Weekend 96–100 ↔ Voyager 104–108 outros
+//   - Stems: The Weekend's vocals and drums over Voyager's bass and other.
+//     Off but with lanes, ready to edit in tune: The Weekend's bass and
+//     other, Voyager's drums and vocals (its "vocals" stem is mostly the
+//     vocoder lead). Cut The Weekend's drums wherever you like
+//     (deck 1, drums), and bring Voyager's drums up there if you want them.
+//   - Keys: B minor (10A) and G major (9B) as detected; Bm is in G major.
+//     Unchecked.
+
+{
+  "schema_version": "0.10",
+
+  "meta": {
+    "mix_name": "The Weekend × Voyager (stems mashup)",
+    "source_prompt": "A test mashup of The Weekend (Radio Edit) and Voyager, by stems; the user will cut The Weekend's drums at some point",
+    "mix_tempo": 127
+  },
+
+  "tracks": {
+    "weekend": { "path": "audio/01 - The Weekend (Radio Edit).mp3" },
+    "voyager": { "path": "audio/10 - Voyager.mp3" }
+  },
+
+  "decks": {
+    "1": { "label": "weekend" },
+    "2": { "label": "voyager" }
+  },
+
+  "timeline": [
+    { "type": "play", "id": "weekend", "deck": 1, "track": "weekend",
+      "from": { "bar": 0 }, "to": { "bar": 100 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" },
+
+    { "type": "play", "id": "voyager", "deck": 2, "track": "voyager",
+      "from": { "bar": 8 }, "to": { "bar": 108 }, "start_at": { "beat": 0 },
+      "target_bpm": "mix" }
+  ],
+
+  "automation": [
+    // The Weekend: vocals and drums.
+    { "lane": "stem_volume", "deck": 1, "stem": "drums",
+      "keyframes": [ { "at": { "beat": 0 }, "value": 1 }, { "at": { "beat": 400 }, "value": 1 } ] },
+    { "lane": "stem_volume", "deck": 1, "stem": "bass",
+      "keyframes": [ { "at": { "beat": 0 }, "value": 0 }, { "at": { "beat": 400 }, "value": 0 } ] },
+    { "lane": "stem_volume", "deck": 1, "stem": "other",
+      "keyframes": [ { "at": { "beat": 0 }, "value": 0 }, { "at": { "beat": 400 }, "value": 0 } ] },
+
+    // Voyager: bass and other.
+    { "lane": "stem_volume", "deck": 2, "stem": "drums",
+      "keyframes": [ { "at": { "beat": 0 }, "value": 0 }, { "at": { "beat": 400 }, "value": 0 } ] },
+    { "lane": "stem_volume", "deck": 2, "stem": "vocals",
+      "keyframes": [ { "at": { "beat": 0 }, "value": 0 }, { "at": { "beat": 400 }, "value": 0 } ] },
+
+    // Both fade over the last 4 bars.
+    { "lane": "deck_volume", "deck": 1,
+      "keyframes": [ { "at": { "beat": 384 }, "value": 1 }, { "at": { "beat": 400 }, "value": 0 } ] },
+    { "lane": "deck_volume", "deck": 2,
+      "keyframes": [ { "at": { "beat": 384 }, "value": 1 }, { "at": { "beat": 400 }, "value": 0 } ] }
+  ]
+}

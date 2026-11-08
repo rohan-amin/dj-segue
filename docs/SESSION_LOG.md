@@ -597,3 +597,42 @@ This log is the durable bridge between sessions. The `start-session` skill reads
 - **After editing an annotation by hand, stop that song's annotate server.** Saving from the open page overwrites the edit. The server also caches `page.html`, so restart it after page changes.
 - Check spot words for typos: the user's "one more time 2" (the cue's name typed into the word box) could never match. Annotate's prefill may be worth tightening.
 - `prepare` finds no lyrics for files named "Artist - Title" when the artist isn't the singer (Starships by "DJ's International"): words were Whisper only.
+
+---
+
+## Session: 2026-11-07
+
+**Milestone:** M6 — Word timing and the planner (side trip: a stems mashup)
+**Duration:** approximately 10 turns
+**Worked on:** a test mashup of The Weekend (Radio Edit) and Voyager, mixed by stems
+
+### Completed
+- Last session's cleanup (`starships_omt_one_more_time` plan and render) was already done.
+- **Prepared two new tracks** (`dj-segue prepare`), annotation drafts committed (sections unlabelled, grids and keys unchecked):
+  - The Weekend (Radio Edit): 127.00 bpm, 101 bars, B minor (10A, 80 %); LRCLIB line-timed, 170/291 words confirmed.
+  - Voyager: 119.88 bpm, 113 bars, G major (9B, 65 %); mostly instrumental (16 words, none confirmed).
+- **`examples/weekend_voyager.plan.jsonc`**: the whole of The Weekend at its own 127 bpm, Voyager stretched ~6 % and started at its bar 8 so the drafted sections line up (both break down around Weekend bar 60, both grooves return at Weekend bar 72). Stems: Weekend vocals + drums over Voyager bass + other; the other four stems have lanes at 0 or 1, ready to edit; both decks fade over the last 4 bars. Rendered to `renders/weekend_voyager.wav` (3:09). **Not listened to yet.**
+
+### Tests
+- 410 passed, 0 failed (~3.3 min), at the start of the session. No code changed since.
+
+### Schema or interface changes
+- none
+
+### Dependencies added/removed
+- none. `uv sync --dry-run --all-extras` shows minor drift (e.g. torch 2.14.0 → 2.14.1, truststore 0.10.4 → 0.10.5); `uv.lock` isn't tracked.
+
+### Open questions
+- **Tune can't open a plan with no transition.** `dj-segue tune` exits with "no crossfade, echo out or vocal handoff in this plan"; its items are transitions only, shown ±16 beats. A mashup needs a mode with no transition: the whole mix (or a chosen section) with the stem strips editable anywhere. Undecided: build it, or edit mashup lanes by hand from bar numbers.
+- Where the user wants The Weekend's drums cut (and whether Voyager's drums come in there).
+- Carried over: `starships_omt_spot1/2` unrated; what kept LGIS → Everybody at A-; keys and grids unchecked on all eight annotated tracks.
+
+### Next session should
+- Listen to `renders/weekend_voyager.wav`; get the drum-cut bar from the user and write it into the plan (deck 1 `drums` lane; deck 2 `drums` up if wanted).
+- Decide on a tune mashup mode (see open questions).
+- Then back to the M6 list: rate `starships_omt_spot1/2`, spots on more tracks.
+
+### Notes for future sessions
+- **`dj-segue` isn't on the user's PATH** (their terminal is in conda `base`): give commands as `uv run dj-segue …`, or `source .venv/bin/activate` first.
+- Tune only opens plans with a crossfade / echo out / vocal handoff; check that before telling the user to tune a plan.
+- "The Weekend Radio Mix" = `audio/01 - The Weekend (Radio Edit).mp3` (assumed; there's also an Original 12 Inch Mix).

@@ -126,6 +126,8 @@ Each milestone produces a working program and a demoable test mix. Don't skip ah
 - Vocal handoffs are items: their instrumental fades edit like a crossfade's; the vocal swap is a marker to drag (written as `swap_at`; "Halfway" resets it). Lanes show the instrumentals' gain, the vocals' as a dashed line.
 - A stem picker next to the lane buttons: on a deck mixed by stems, the strips edit that stem's volume (`stem_volume`) and EQ (`eq` + `stem`). A deck not mixed by stems says so (making it one needs a re-render: add a stem lane in the plan and reopen).
 
+**T10 — Mashups (no transition).**  (PROPOSED 2026-11-07) Tune only opens plans with a crossfade / echo out / vocal handoff, shown ±16 beats. A stems mashup (`examples/weekend_voyager.plan.jsonc`) has none: open the whole mix, or a chosen section, with the stem strips editable anywhere. Not yet agreed.
+
 **T6 — A/B snapshots.** Save the current setting as a snapshot, keep editing, switch between snapshots while playing.
 
 **Acceptance test:** The Fancy → Like 'em All blend reshaped in the page with a hand-drawn `in` curve and a moved jump point; saved plan differs from the original only in those keys (comments intact); `dj-segue render` of the saved plan matches what the page played (same sample-level gains; region audio byte-identical).
